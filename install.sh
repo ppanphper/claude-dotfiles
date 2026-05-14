@@ -21,7 +21,67 @@ die()  { printf '%b\n' "${RED}✗${RESET}  $1" >&2; exit 1; }
 
 # --- prerequisites ---
 command -v git >/dev/null || die "git not installed"
-command -v jq  >/dev/null || die "jq not installed — brew install jq  (or: apt install jq)"
+
+install_jq() {
+  command -v jq >/dev/null && return 0
+  if [ "${SKIP_JQ_INSTALL:-0}" = "1" ]; then
+    die "jq not installed and SKIP_JQ_INSTALL=1 set — install jq manually and re-run"
+  fi
+
+  info "jq not found — attempting auto-install"
+
+  local sudo_cmd=""
+  if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo >/dev/null; then
+      sudo_cmd="sudo"
+    fi
+  fi
+
+  case "$(uname -s)" in
+    Darwin)
+      if command -v brew >/dev/null; then
+        info "running: brew install jq"
+        brew install jq
+      elif command -v port >/dev/null; then
+        info "running: $sudo_cmd port install jq"
+        $sudo_cmd port install jq
+      else
+        die "macOS: install Homebrew (https://brew.sh) and re-run, or: brew install jq manually"
+      fi
+      ;;
+    Linux)
+      if command -v apt-get >/dev/null; then
+        info "running: $sudo_cmd apt-get install -y jq"
+        $sudo_cmd apt-get update -qq && $sudo_cmd apt-get install -y jq
+      elif command -v dnf >/dev/null; then
+        info "running: $sudo_cmd dnf install -y jq"
+        $sudo_cmd dnf install -y jq
+      elif command -v yum >/dev/null; then
+        info "running: $sudo_cmd yum install -y jq"
+        $sudo_cmd yum install -y jq
+      elif command -v pacman >/dev/null; then
+        info "running: $sudo_cmd pacman -S --noconfirm jq"
+        $sudo_cmd pacman -S --noconfirm jq
+      elif command -v zypper >/dev/null; then
+        info "running: $sudo_cmd zypper install -y jq"
+        $sudo_cmd zypper install -y jq
+      elif command -v apk >/dev/null; then
+        info "running: $sudo_cmd apk add jq"
+        $sudo_cmd apk add jq
+      else
+        die "no supported package manager (apt/dnf/yum/pacman/zypper/apk) — install jq manually"
+      fi
+      ;;
+    *)
+      die "unsupported OS: $(uname -s) — install jq manually"
+      ;;
+  esac
+
+  command -v jq >/dev/null || die "jq install ran but jq still not on PATH"
+  ok "jq installed: $(jq --version)"
+}
+
+install_jq
 
 mkdir -p "$CLAUDE_DIR"
 
