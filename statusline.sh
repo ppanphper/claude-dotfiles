@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code statusline:
 # model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch [⎇ worktree]
-#   | ctx: in/total (X%) | 💰 $X.XX | quota: 5h X% / 7d Y%
+#   | ctx: in/total (X%) | free: 5h X% / 7d Y%
 
 input=$(cat)
 
@@ -80,25 +80,17 @@ else
   ctx_str="ctx: n/a"
 fi
 
-# 6. Cost
-cost=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
-if [ -n "$cost" ]; then
-  cost_str=$(printf '💰 $%.2f' "$cost")
-else
-  cost_str=""
-fi
-
-# 7. Quota
+# 6. Quota remaining (100 - used_percentage)
 five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 week_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
 if [ -n "$five_pct" ] || [ -n "$week_pct" ]; then
   five_str="n/a"
   week_str="n/a"
-  [ -n "$five_pct" ] && five_str=$(printf '%.0f%%' "$five_pct")
-  [ -n "$week_pct" ] && week_str=$(printf '%.0f%%' "$week_pct")
-  quota_str="quota: 5h ${five_str} / 7d ${week_str}"
+  [ -n "$five_pct" ] && five_str=$(awk -v p="$five_pct" 'BEGIN{printf "%.0f%%", 100-p}')
+  [ -n "$week_pct" ] && week_str=$(awk -v p="$week_pct" 'BEGIN{printf "%.0f%%", 100-p}')
+  quota_str="free: 5h ${five_str} / 7d ${week_str}"
 else
-  quota_str="quota: n/a"
+  quota_str="free: n/a"
 fi
 
 SEP="${DIM} | ${RESET}"
@@ -108,7 +100,6 @@ out="${CYAN}${model_str}${RESET}"
 out="${out}${SEP}${GREEN}${dir_str}${RESET}"
 [ -n "$branch_str" ] && out="${out}${SEP}${BLUE}${branch_str}${RESET}"
 out="${out}${SEP}${YELLOW}${ctx_str}${RESET}"
-[ -n "$cost_str" ] && out="${out}${SEP}${YELLOW}${cost_str}${RESET}"
 out="${out}${SEP}${MAGENTA}${quota_str}${RESET}"
 
 printf '%b\n' "$out"
