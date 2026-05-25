@@ -37,6 +37,33 @@ Claude Sonnet 4.6 | myproject | ctx: n/a | free: n/a
 | `ctx: in/total (X%)`         | `.context_window.total_input_tokens` / `.context_window_size` / `.context_window.used_percentage`         | Shows absolute token counts plus percent. Falls back to `ctx: n/a` before the first API response.                                  |
 | `free: 5h X% / 7d Y%`        | `100 − .rate_limits.five_hour.used_percentage` / `100 − .rate_limits.seven_day.used_percentage`           | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows. Only available for Pro/Max subscribers after the first response. `n/a` for API-key users. |
 
+### Worktree auto-tracking
+
+A `PostToolUse` hook on the `Bash` tool watches for successful `git worktree
+add <path>` invocations and writes the new worktree's absolute path to
+`~/.claude/.last_worktree_<session_id>`. The status line then displays that
+directory and its branch instead of the original session CWD — useful when
+you ask Claude to create a new worktree and continue working there, since
+Claude Code's session CWD doesn't follow subprocess `cd`s.
+
+Known limits (by design, to keep the hook robust):
+
+- Only `git worktree add` is matched — not arbitrary `cd`, `git clone`, or
+  scaffolders like `cargo new`.
+- Paths containing shell variables (`$VAR`) or command substitution
+  (`` `…` ``, `$(…)`) are skipped.
+- Subshells like `(git worktree add ...)` are not detected.
+- If you ask Claude to create a worktree but keep working in the original
+  directory, the status line will point at the new worktree until you
+  reset. To reset the current session's tracker:
+
+  ```bash
+  rm ~/.claude/.last_worktree_*
+  ```
+
+State is per-session (keyed by `session_id`), so concurrent Claude sessions
+don't interfere with each other.
+
 ## Install
 
 ### One-line install
@@ -55,10 +82,14 @@ The installer:
 3. Symlinks `~/.claude/statusline.sh` → the repo's `statusline.sh`. Any
    pre-existing file at that path is backed up to
    `~/.claude/statusline.sh.bak.<timestamp>`.
-4. Merges a `statusLine` entry into `~/.claude/settings.json`, preserving
-   every other field. The original file is backed up to
-   `settings.json.bak.<timestamp>` before any change is written, and the new
-   file is written atomically via `mktemp` + `mv`.
+4. Symlinks `~/.claude/hooks/worktree-tracker.sh` → the repo's hook (same
+   backup behavior).
+5. Merges `statusLine` and a `PostToolUse` → `Bash` → `worktree-tracker.sh`
+   entry into `~/.claude/settings.json`, preserving every other field and
+   any other Bash hooks you've configured. The original file is backed up
+   to `settings.json.bak.<timestamp>` before any change is written, and the
+   new file is written atomically via `mktemp` + `mv`. Re-running the
+   installer is idempotent — no duplicate entries are added.
 
 Restart Claude Code to see the status line.
 
@@ -80,8 +111,10 @@ If you'd rather not run a piped shell script:
 
 ```bash
 git clone https://github.com/ppanphper/claude-dotfiles.git ~/claude-dotfiles
-chmod +x ~/claude-dotfiles/statusline.sh
+chmod +x ~/claude-dotfiles/statusline.sh ~/claude-dotfiles/hooks/worktree-tracker.sh
 ln -s ~/claude-dotfiles/statusline.sh ~/.claude/statusline.sh
+mkdir -p ~/.claude/hooks
+ln -s ~/claude-dotfiles/hooks/worktree-tracker.sh ~/.claude/hooks/worktree-tracker.sh
 ```
 
 Then add to `~/.claude/settings.json` (merge with whatever's already there):
@@ -92,6 +125,16 @@ Then add to `~/.claude/settings.json` (merge with whatever's already there):
     "type": "command",
     "command": "~/.claude/statusline.sh",
     "padding": 0
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/worktree-tracker.sh" }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -108,9 +151,11 @@ next status-line refresh — no further action needed.
 ## Uninstall
 
 ```bash
-rm ~/.claude/statusline.sh
-# Then either remove the "statusLine" field from ~/.claude/settings.json
-# or restore from the settings.json.bak.<timestamp> the installer created.
+rm ~/.claude/statusline.sh ~/.claude/hooks/worktree-tracker.sh
+rm -f ~/.claude/.last_worktree_*
+# Then either remove the "statusLine" + matching "hooks" entries from
+# ~/.claude/settings.json, or restore from the settings.json.bak.<timestamp>
+# the installer created.
 rm -rf ~/claude-dotfiles
 ```
 

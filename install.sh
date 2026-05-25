@@ -113,26 +113,73 @@ else
   ok "symlink created: $LINK → $TARGET"
 fi
 
+# --- symlink hooks/worktree-tracker.sh ---
+HOOKS_DIR="$CLAUDE_DIR/hooks"
+mkdir -p "$HOOKS_DIR"
+
+HOOK_TARGET="$INSTALL_DIR/hooks/worktree-tracker.sh"
+HOOK_LINK="$HOOKS_DIR/worktree-tracker.sh"
+[ -f "$HOOK_TARGET" ] || die "$HOOK_TARGET not found"
+chmod +x "$HOOK_TARGET"
+
+if [ -L "$HOOK_LINK" ] && [ "$(readlink "$HOOK_LINK")" = "$HOOK_TARGET" ]; then
+  ok "hook symlink already in place: $HOOK_LINK"
+elif [ -e "$HOOK_LINK" ] || [ -L "$HOOK_LINK" ]; then
+  BACKUP="${HOOK_LINK}.bak.$(date +%s)"
+  warn "existing $HOOK_LINK backed up → $BACKUP"
+  mv "$HOOK_LINK" "$BACKUP"
+  ln -s "$HOOK_TARGET" "$HOOK_LINK"
+  ok "hook symlink created: $HOOK_LINK → $HOOK_TARGET"
+else
+  ln -s "$HOOK_TARGET" "$HOOK_LINK"
+  ok "hook symlink created: $HOOK_LINK → $HOOK_TARGET"
+fi
+
 # --- update settings.json ---
-DESIRED='{"type":"command","command":"~/.claude/statusline.sh","padding":0}'
+DESIRED_STATUSLINE='{"type":"command","command":"~/.claude/statusline.sh","padding":0}'
+HOOK_CMD='~/.claude/hooks/worktree-tracker.sh'
+
+merge_settings() {
+  # $1 = current settings.json content (or "{}" if none)
+  jq --argjson sl "$DESIRED_STATUSLINE" --arg hook "$HOOK_CMD" '
+    .statusLine = $sl
+    | .hooks.PostToolUse = (
+        (.hooks.PostToolUse // []) as $arr
+        | if ($arr | any(.matcher == "Bash")) then
+            $arr | map(
+              if .matcher == "Bash" then
+                .hooks = ((.hooks // []) + (
+                  if ((.hooks // []) | any(.command == $hook)) then []
+                  else [{type:"command", command:$hook}]
+                  end
+                ))
+              else . end
+            )
+          else
+            $arr + [{matcher:"Bash", hooks:[{type:"command", command:$hook}]}]
+          end
+      )
+  '
+}
 
 if [ -f "$SETTINGS" ]; then
   if ! jq empty "$SETTINGS" 2>/dev/null; then
     die "$SETTINGS is not valid JSON — fix it manually first"
   fi
-  CURRENT=$(jq -c '.statusLine // empty' "$SETTINGS")
-  if [ "$CURRENT" = "$DESIRED" ]; then
+  tmp=$(mktemp)
+  merge_settings < "$SETTINGS" > "$tmp"
+  if jq -e --slurpfile a "$SETTINGS" --slurpfile b "$tmp" -n '$a == $b' >/dev/null; then
     ok "settings.json already configured"
+    rm -f "$tmp"
   else
     BACKUP="${SETTINGS}.bak.$(date +%s)"
     cp "$SETTINGS" "$BACKUP"
     warn "settings.json backed up → $BACKUP"
-    tmp=$(mktemp)
-    jq --argjson sl "$DESIRED" '.statusLine = $sl' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+    mv "$tmp" "$SETTINGS"
     ok "settings.json updated"
   fi
 else
-  echo "$DESIRED" | jq '{statusLine: .}' > "$SETTINGS"
+  echo '{}' | merge_settings > "$SETTINGS"
   ok "settings.json created"
 fi
 

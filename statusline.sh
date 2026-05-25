@@ -45,6 +45,29 @@ project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 git_worktree=$(echo "$input" | jq -r '.workspace.git_worktree // empty')
 [ -z "$current_dir" ] && current_dir="$PWD"
 [ -z "$project_dir" ] && project_dir="$current_dir"
+
+# Override current_dir if the worktree-tracker hook recorded a newer path.
+# See hooks/worktree-tracker.sh — written after a successful `git worktree add`.
+session_id=$(echo "$input" | jq -r '.session_id // empty')
+if [ -n "$session_id" ]; then
+  wt_file="$HOME/.claude/.last_worktree_${session_id}"
+  if [ -f "$wt_file" ]; then
+    saved=$(head -n1 "$wt_file" 2>/dev/null)
+    if [ -n "$saved" ] && [ -d "$saved" ]; then
+      current_dir="$saved"
+      git_worktree=""
+    fi
+  fi
+fi
+
+# Recompute git_worktree if we don't have one yet (e.g., after override).
+if [ -z "$git_worktree" ]; then
+  gitdir=$(git -C "$current_dir" rev-parse --git-dir 2>/dev/null)
+  case "$gitdir" in
+    */.git/worktrees/*) git_worktree=$(basename "$gitdir") ;;
+  esac
+fi
+
 project_name=$(basename "$project_dir")
 if [ "$current_dir" = "$project_dir" ]; then
   dir_str="$project_name"
