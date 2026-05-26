@@ -28,6 +28,18 @@ fmt_tokens() {
   }'
 }
 
+fmt_dur() {
+  awk -v s="$1" 'BEGIN {
+    if (s <= 0) { printf "now"; exit }
+    d = int(s/86400); s -= d*86400
+    h = int(s/3600);  s -= h*3600
+    m = int(s/60)
+    if (d > 0)      printf "%dd%dh", d, h
+    else if (h > 0) printf "%dh%dm", h, m
+    else            printf "%dm", m
+  }'
+}
+
 # 1. Model + effort + thinking
 model=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
 effort=$(echo "$input" | jq -r '.effort.level // empty')
@@ -103,14 +115,23 @@ else
   ctx_str="ctx: n/a"
 fi
 
-# 6. Quota remaining (100 - used_percentage)
+# 6. Quota remaining (100 - used_percentage) + time until reset
 five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 week_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 if [ -n "$five_pct" ] || [ -n "$week_pct" ]; then
+  now=$(date +%s)
   five_str="n/a"
   week_str="n/a"
-  [ -n "$five_pct" ] && five_str=$(awk -v p="$five_pct" 'BEGIN{printf "%.0f%%", 100-p}')
-  [ -n "$week_pct" ] && week_str=$(awk -v p="$week_pct" 'BEGIN{printf "%.0f%%", 100-p}')
+  if [ -n "$five_pct" ]; then
+    five_str=$(awk -v p="$five_pct" 'BEGIN{printf "%.0f%%", 100-p}')
+    [ -n "$five_reset" ] && five_str="${five_str} ($(fmt_dur $((five_reset - now))))"
+  fi
+  if [ -n "$week_pct" ]; then
+    week_str=$(awk -v p="$week_pct" 'BEGIN{printf "%.0f%%", 100-p}')
+    [ -n "$week_reset" ] && week_str="${week_str} ($(fmt_dur $((week_reset - now))))"
+  fi
   quota_str="free: 5h ${five_str} / 7d ${week_str}"
 else
   quota_str="free: n/a"

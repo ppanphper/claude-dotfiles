@@ -10,7 +10,7 @@ subdirectory of a project the session is operating in.
 A single status row at the bottom of Claude Code that shows:
 
 ```
-Claude Opus 4.7 [high] 💭 | 🤖 code-reviewer | myproject/src | 🌿 main ⎇ feature-x | ctx: 15.5k/200k (8%) | free: 5h 59% / 7d 91%
+Claude Opus 4.7 [high] 💭 | 🤖 code-reviewer | myproject/src | 🌿 main ⎇ feature-x | ctx: 15.5k/200k (8%) | free: 5h 59% (2h15m) / 7d 91% (3d4h)
 ```
 
 Each column is color-coded in your terminal. Columns with no data are
@@ -35,7 +35,7 @@ Claude Sonnet 4.6 | myproject | ctx: n/a | free: n/a
 | `project[/subdir]`           | `.workspace.project_dir` + `.workspace.current_dir`                                                       | If you `cd` into a subdirectory of the project, shows `project/relative/path`.                                                     |
 | `🌿 branch [⎇ worktree]`     | `git branch --show-current` + `.workspace.git_worktree`                                                   | Hidden in non-git directories. The `⎇ worktree` suffix appears only when the current directory is inside a linked git worktree.   |
 | `ctx: in/total (X%)`         | `.context_window.total_input_tokens` / `.context_window_size` / `.context_window.used_percentage`         | Shows absolute token counts plus percent. Falls back to `ctx: n/a` before the first API response.                                  |
-| `free: 5h X% / 7d Y%`        | `100 − .rate_limits.five_hour.used_percentage` / `100 − .rate_limits.seven_day.used_percentage`           | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows. Only available for Pro/Max subscribers after the first response. `n/a` for API-key users. |
+| `free: 5h X% (Δ) / 7d Y% (Δ)` | `100 − .rate_limits.five_hour.used_percentage` (+ `resets_at`) / `100 − .rate_limits.seven_day.used_percentage` (+ `resets_at`) | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows, with time until each window resets in parentheses (`2h15m`, `3d4h`, `now`). Countdown is hidden if `resets_at` is absent. Only available for Pro/Max subscribers after the first response. `n/a` for API-key users. |
 
 ### Worktree auto-tracking
 
