@@ -136,8 +136,8 @@ else
 fi
 
 # --- update settings.json ---
-DESIRED_STATUSLINE='{"type":"command","command":"~/.claude/statusline.sh","padding":0}'
-HOOK_CMD='~/.claude/hooks/worktree-tracker.sh'
+DESIRED_STATUSLINE='{"type":"command","command":"'"$CLAUDE_DIR"'/statusline.sh","padding":0}'
+HOOK_CMD="$CLAUDE_DIR/hooks/worktree-tracker.sh"
 
 merge_settings() {
   # $1 = current settings.json content (or "{}" if none)
