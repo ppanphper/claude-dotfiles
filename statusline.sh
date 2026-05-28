@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Claude Code statusline:
-# model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch [⎇ worktree]
+# model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch
 #   | ctx: in/total (X%) | free: 5h X% / 7d Y%
+# <full current path in dim gray>
 
 input=$(cat)
 
@@ -90,14 +91,10 @@ else
   esac
 fi
 
-# 4. Git branch
+# 4. Git branch (worktree name is already shown in the dir column, so don't repeat it)
 branch=$(git -C "$current_dir" branch --show-current 2>/dev/null)
 if [ -n "$branch" ]; then
-  if [ -n "$git_worktree" ]; then
-    branch_str="🌿 ${branch} ⎇ ${git_worktree}"
-  else
-    branch_str="🌿 ${branch}"
-  fi
+  branch_str="🌿 ${branch}"
 else
   branch_str=""
 fi
@@ -146,4 +143,6 @@ out="${out}${SEP}${GREEN}${dir_str}${RESET}"
 out="${out}${SEP}${YELLOW}${ctx_str}${RESET}"
 out="${out}${SEP}${MAGENTA}${quota_str}${RESET}"
 
+# Second line: full current path in dim gray.
 printf '%b\n' "$out"
+printf '%b\n' "${DIM}${current_dir}${RESET}"
