@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code statusline:
 # model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch
-#   | ctx: in/total (X%) | free: 5h X% / 7d Y%
+#   | ctx: in/total (X%) | free: 5h X% (reset) $A / 7d Y% (reset) $B
 # <full current path in dim gray>
 
 input=$(cat)
@@ -14,6 +14,7 @@ GREEN='\033[32m'
 MAGENTA='\033[35m'
 BLUE='\033[34m'
 RED='\033[31m'
+MONEY='\033[92m'
 
 fmt_tokens() {
   awk -v n="$1" 'BEGIN {
@@ -38,6 +39,14 @@ fmt_dur() {
     if (d > 0)      printf "%dd%dh", d, h
     else if (h > 0) printf "%dh%dm", h, m
     else            printf "%dm", m
+  }'
+}
+
+fmt_money() {
+  awk -v n="$1" 'BEGIN {
+    n = n + 0
+    if (n >= 100) printf "$%.0f", n
+    else          printf "$%.2f", n
   }'
 }
 
@@ -112,7 +121,52 @@ else
   ctx_str="ctx: n/a"
 fi
 
-# 6. Quota remaining (100 - used_percentage) + time until reset
+# 6. Cost figures: spend in the current 5-hour block + last 7 days, via ccusage.
+# Not in the statusline JSON — ccusage aggregates ~/.claude/projects/**/*.jsonl.
+# Cache (TTL 30s) and refresh in the background so renders stay snappy.
+# These get appended onto the matching 5h / 7d quota parts below.
+c5=""; c7=""
+COST_CACHE="$HOME/.claude/.cost_cache"
+COST_LOCK="$HOME/.claude/.cost_cache.lock"
+COST_TTL=30
+refresh_costs() {
+  local since b5 d7 tmp
+  since=$(date -v-6d +%Y%m%d)
+  b5=$(bunx ccusage blocks --active --json --offline 2>/dev/null \
+       | jq -r '[.blocks[]?|select(.isActive)|.costUSD]|add // empty')
+  d7=$(bunx ccusage daily --json --offline --since "$since" 2>/dev/null \
+       | jq -r '.totals.totalCost // empty')
+  if [ -n "${b5}${d7}" ]; then
+    tmp=$(mktemp "${COST_CACHE}.XXXXXX") || return
+    printf '%s %s\n' "${b5:-0}" "${d7:-0}" > "$tmp"
+    mv -f "$tmp" "$COST_CACHE"
+  fi
+}
+if command -v bunx >/dev/null 2>&1; then
+  cnow=$(date +%s)
+  stale=1
+  if [ -f "$COST_CACHE" ]; then
+    age=$(( cnow - $(stat -f %m "$COST_CACHE" 2>/dev/null || echo 0) ))
+    [ "$age" -lt "$COST_TTL" ] && stale=0
+  fi
+  if [ "$stale" = 1 ]; then
+    # Clear a lock left behind by a crashed refresh.
+    if [ -d "$COST_LOCK" ]; then
+      lage=$(( cnow - $(stat -f %m "$COST_LOCK" 2>/dev/null || echo 0) ))
+      [ "$lage" -gt 120 ] && rmdir "$COST_LOCK" 2>/dev/null
+    fi
+    if mkdir "$COST_LOCK" 2>/dev/null; then
+      if [ -f "$COST_CACHE" ]; then
+        ( refresh_costs; rmdir "$COST_LOCK" 2>/dev/null ) >/dev/null 2>&1 &
+      else
+        refresh_costs; rmdir "$COST_LOCK" 2>/dev/null   # first run: compute now
+      fi
+    fi
+  fi
+  [ -f "$COST_CACHE" ] && read -r c5 c7 < "$COST_CACHE" 2>/dev/null
+fi
+
+# 7. Quota remaining (100 - used_percentage) + reset countdown, with spend appended.
 five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 week_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
@@ -124,10 +178,12 @@ if [ -n "$five_pct" ] || [ -n "$week_pct" ]; then
   if [ -n "$five_pct" ]; then
     five_str=$(awk -v p="$five_pct" 'BEGIN{printf "%.0f%%", 100-p}')
     [ -n "$five_reset" ] && five_str="${five_str} ($(fmt_dur $((five_reset - now))))"
+    [ -n "$c5" ] && five_str="${five_str} ${MONEY}$(fmt_money "$c5")${MAGENTA}"
   fi
   if [ -n "$week_pct" ]; then
     week_str=$(awk -v p="$week_pct" 'BEGIN{printf "%.0f%%", 100-p}')
     [ -n "$week_reset" ] && week_str="${week_str} ($(fmt_dur $((week_reset - now))))"
+    [ -n "$c7" ] && week_str="${week_str} ${MONEY}$(fmt_money "$c7")${MAGENTA}"
   fi
   quota_str="free: 5h ${five_str} / 7d ${week_str}"
 else

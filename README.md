@@ -2,15 +2,15 @@
 
 Custom [Claude Code](https://claude.com/claude-code) configuration. Currently
 ships a status line that surfaces the things the built-in UI doesn't: absolute
-token counts, subscription quota usage, git branch & worktree, and which
-subdirectory of a project the session is operating in.
+token counts, subscription quota usage and spend, git branch & worktree, and
+which subdirectory of a project the session is operating in.
 
 ## Status line
 
 A single status row at the bottom of Claude Code that shows:
 
 ```
-Claude Opus 4.7 [high] 💭 | 🤖 code-reviewer | myproject/src | 🌿 main ⎇ feature-x | ctx: 15.5k/200k (8%) | free: 5h 59% (2h15m) / 7d 91% (3d4h)
+Claude Opus 4.7 [high] 💭 | 🤖 code-reviewer | myproject/src | 🌿 main ⎇ feature-x | ctx: 15.5k/200k (8%) | free: 5h 59% (2h15m) $2.01 / 7d 91% (3d4h) $307
 ```
 
 Each column is color-coded in your terminal. Columns with no data are
@@ -35,7 +35,7 @@ Claude Sonnet 4.6 | myproject | ctx: n/a | free: n/a
 | `project[/subdir]`           | `.workspace.project_dir` + `.workspace.current_dir`                                                       | If you `cd` into a subdirectory of the project, shows `project/relative/path`.                                                     |
 | `🌿 branch [⎇ worktree]`     | `git branch --show-current` + `.workspace.git_worktree`                                                   | Hidden in non-git directories. The `⎇ worktree` suffix appears only when the current directory is inside a linked git worktree.   |
 | `ctx: in/total (X%)`         | `.context_window.total_input_tokens` / `.context_window_size` / `.context_window.used_percentage`         | Shows absolute token counts plus percent. Falls back to `ctx: n/a` before the first API response.                                  |
-| `free: 5h X% (Δ) / 7d Y% (Δ)` | `100 − .rate_limits.five_hour.used_percentage` (+ `resets_at`) / `100 − .rate_limits.seven_day.used_percentage` (+ `resets_at`) | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows, with time until each window resets in parentheses (`2h15m`, `3d4h`, `now`). Countdown is hidden if `resets_at` is absent. Only available for Pro/Max subscribers after the first response. `n/a` for API-key users. |
+| `free: 5h X% (Δ) $A / 7d Y% (Δ) $B` | `100 − .rate_limits.*.used_percentage` (+ `resets_at`); `$` amounts from [`ccusage`](https://github.com/ryoppippi/ccusage) | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows, with time until each resets in parentheses (`2h15m`, `3d4h`, `now`) and the spend so far in that window appended in green. The dollar figures come from `ccusage` (the statusline JSON carries no cost data): `$A` is the active 5-hour billing block, `$B` is the last 7 days. They're cached for 30s and refreshed in the background, so renders stay instant. Quota %/countdown need Pro/Max after the first response (`n/a` for API-key users); the `$` amounts need `bunx`/`ccusage` and are simply omitted if either is missing. |
 
 ### Worktree auto-tracking
 
@@ -166,5 +166,10 @@ rm -rf ~/claude-dotfiles
 - `jq` — used both by `install.sh` to merge `settings.json` safely and by
   `statusline.sh` itself to parse the JSON Claude Code pipes to it on every
   refresh. Auto-installed by `install.sh` unless `SKIP_JQ_INSTALL=1`.
+- `bunx` + [`ccusage`](https://github.com/ryoppippi/ccusage) — _optional_, only
+  for the `$` spend figures appended to the `free` column. `ccusage` is fetched
+  on demand via `bunx` and runs with cached pricing (`--offline`, no network).
+  If `bunx` isn't on your `PATH`, the spend figures are silently omitted and
+  everything else keeps working.
 
 Tested on macOS and Linux. Windows is not currently supported.
