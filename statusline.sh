@@ -3,18 +3,25 @@
 # model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch
 #   | ctx: in/total (X%) | free: 5h X% (reset) $A / 7d Y% (reset) $B
 # <full current path in dim gray>
+#
+# Columns are greedily wrapped across as many rows as needed to fit the
+# terminal width ($COLUMNS, exported by Claude Code >= 2.1.153) so nothing is
+# truncated in narrow panes (e.g. iTerm2 split panes). When the width isn't
+# known we fall back to the original single row.
 
 input=$(cat)
 
-DIM='\033[2m'
-RESET='\033[0m'
-CYAN='\033[36m'
-YELLOW='\033[33m'
-GREEN='\033[32m'
-MAGENTA='\033[35m'
-BLUE='\033[34m'
-RED='\033[31m'
-MONEY='\033[92m'
+# Colors are stored as real ESC bytes (ANSI-C $'...') so we can both print them
+# with `printf '%s'` and strip them when measuring on-screen column widths.
+DIM=$'\033[2m'
+RESET=$'\033[0m'
+CYAN=$'\033[36m'
+YELLOW=$'\033[33m'
+GREEN=$'\033[32m'
+MAGENTA=$'\033[35m'
+BLUE=$'\033[34m'
+RED=$'\033[31m'
+MONEY=$'\033[92m'
 
 fmt_tokens() {
   awk -v n="$1" 'BEGIN {
@@ -190,15 +197,83 @@ else
   quota_str="free: n/a"
 fi
 
-SEP="${DIM} | ${RESET}"
+SEP="${DIM} | ${RESET}"   # column separator (3 visible cells: " | ")
+SEP_W=3
 
-out="${CYAN}${model_str}${RESET}"
-[ -n "$agent_name" ] && out="${out}${SEP}${RED}🤖 ${agent_name}${RESET}"
-out="${out}${SEP}${GREEN}${dir_str}${RESET}"
-[ -n "$branch_str" ] && out="${out}${SEP}${BLUE}${branch_str}${RESET}"
-out="${out}${SEP}${YELLOW}${ctx_str}${RESET}"
-out="${out}${SEP}${MAGENTA}${quota_str}${RESET}"
+# Columns in display order. Empty ones are skipped so they leave no gap.
+parts=()
+parts+=("${CYAN}${model_str}${RESET}")
+[ -n "$agent_name" ] && parts+=("${RED}🤖 ${agent_name}${RESET}")
+parts+=("${GREEN}${dir_str}${RESET}")
+[ -n "$branch_str" ] && parts+=("${BLUE}${branch_str}${RESET}")
+parts+=("${YELLOW}${ctx_str}${RESET}")
+parts+=("${MAGENTA}${quota_str}${RESET}")
 
-# Second line: full current path in dim gray.
-printf '%b\n' "$out"
-printf '%b\n' "${DIM}${current_dir}${RESET}"
+# Terminal width. Claude Code >= 2.1.153 exports COLUMNS before invoking the
+# statusline; tput/stty can't help here because our stdout is a pipe. When it's
+# present we greedily pack columns into rows no wider than the terminal; when
+# it's absent (older versions / non-tty) we emit the original single row.
+cols="${COLUMNS:-}"
+case "$cols" in ""|*[!0-9]*) cols=0 ;; esac
+
+if [ "$cols" -gt 0 ]; then
+  # On-screen width of each column in cells, ignoring color escapes and
+  # counting CJK/emoji as 2. perl is precise across scripts; the bash fallback
+  # covers ASCII plus the handful of emoji this statusline emits.
+  widths=()
+  if command -v perl >/dev/null 2>&1; then
+    while IFS= read -r w; do widths+=("$w"); done < <(
+      printf '%s\n' "${parts[@]}" | perl -CSDA -ne '
+        chomp; s/\e\[[0-9;?]*[ -\/]*[@-~]//g;
+        my $n = 0;
+        for my $ch (split //) {
+          my $o = ord $ch;
+          next if $o == 0xFE0F || ($o >= 0x0300 && $o <= 0x036F);  # zero-width
+          if ($o >= 0x1100 && ($o <= 0x115F
+            || ($o >= 0x2E80 && $o <= 0xA4CF)
+            || ($o >= 0xAC00 && $o <= 0xD7A3)
+            || ($o >= 0xF900 && $o <= 0xFAFF)
+            || ($o >= 0xFE30 && $o <= 0xFE4F)
+            || ($o >= 0xFF00 && $o <= 0xFF60)
+            || ($o >= 0xFFE0 && $o <= 0xFFE6)
+            || ($o >= 0x2600 && $o <= 0x27BF)
+            || ($o >= 0x1F000 && $o <= 0x1FAFF))) { $n += 2 }
+          else { $n += 1 }
+        }
+        print "$n\n";
+      '
+    )
+  else
+    shopt -s extglob 2>/dev/null
+    for p in "${parts[@]}"; do
+      s="${p//$'\e'\[*([0-9;?])[a-zA-Z]/}"           # strip ANSI escapes
+      t="${s//🤖/}"; t="${t//🌿/}"; t="${t//💭/}"
+      widths+=( $(( ${#s} + ${#s} - ${#t} )) )       # +1 cell per wide emoji
+    done
+  fi
+
+  # Greedily pack columns into rows, breaking before any column that would
+  # overflow the current row.
+  line=""; line_w=0; i=0
+  for p in "${parts[@]}"; do
+    pw=${widths[i]:-0}; i=$((i + 1))
+    if [ -z "$line" ]; then
+      line="$p"; line_w=$pw
+    elif [ $((line_w + SEP_W + pw)) -le "$cols" ]; then
+      line="${line}${SEP}${p}"; line_w=$((line_w + SEP_W + pw))
+    else
+      printf '%s\n' "$line"
+      line="$p"; line_w=$pw
+    fi
+  done
+  [ -n "$line" ] && printf '%s\n' "$line"
+else
+  out=""
+  for p in "${parts[@]}"; do
+    [ -z "$out" ] && out="$p" || out="${out}${SEP}${p}"
+  done
+  printf '%s\n' "$out"
+fi
+
+# Final line: the full current path in dim gray.
+printf '%s\n' "${DIM}${current_dir}${RESET}"

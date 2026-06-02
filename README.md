@@ -23,6 +23,29 @@ A minimal session, just after launching in a non-git directory:
 Claude Sonnet 4.6 | myproject | ctx: n/a | free: n/a
 ```
 
+### Responsive wrapping
+
+The columns are **greedily wrapped** across as many rows as needed to fit your
+terminal width, so nothing gets cut off in a narrow pane (e.g. an iTerm2 split
+pane where several sessions share one window). On a wide terminal everything
+stays on a single row as above; as the pane narrows the columns spill onto
+additional rows:
+
+```
+Claude Opus 4.7 [high] 💭 | 🤖 code-reviewer
+myproject/src | 🌿 main
+ctx: 15.5k/200k (8%)
+free: 5h 59% (2h15m) $2.01 / 7d 91% (3d4h) $307
+/full/path/to/myproject/src
+```
+
+Wrapping uses the `$COLUMNS` value Claude Code exports before each render, which
+**requires Claude Code v2.1.153 or later** (`tput`/`stty` can't see the width
+because the status line's stdout is a pipe). On older versions the columns stay
+on one row. Display widths account for ANSI colors (zero width) and CJK/emoji
+(double width); column boundaries are never split, so a single very long column
+(usually `free:`) may still overflow a very narrow pane.
+
 > Screenshot of an actual session (drop a PNG into the repo and reference it
 > here): _todo._
 
@@ -171,5 +194,12 @@ rm -rf ~/claude-dotfiles
   on demand via `bunx` and runs with cached pricing (`--offline`, no network).
   If `bunx` isn't on your `PATH`, the spend figures are silently omitted and
   everything else keeps working.
+- `perl` — _optional_, used to measure column display widths precisely (CJK and
+  emoji count as two cells) when wrapping. Present by default on macOS and most
+  Linux distributions. If it's missing, a pure-bash approximation is used that
+  handles ASCII and the status line's emoji; very wide CJK directory names may
+  then wrap slightly early.
+- Claude Code **v2.1.153+** for responsive wrapping (it exports `$COLUMNS`).
+  Earlier versions render everything on a single row.
 
 Tested on macOS and Linux. Windows is not currently supported.
