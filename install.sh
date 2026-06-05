@@ -81,6 +81,49 @@ install_jq() {
   ok "jq installed: $(jq --version)"
 }
 
+# statusline.sh shows the `$` spend figures by running ccusage through the first
+# of these it finds: a global `ccusage` binary, `bunx` (bun), or `npx` (node).
+# Node (so `npx`) ships on most machines, so this usually just passes. Without
+# any runner the quota columns still render — only the amounts are hidden, so we
+# don't force-install a whole JS runtime by default. Opt in with INSTALL_BUN=1.
+ensure_ccusage_runner() {
+  if command -v ccusage >/dev/null 2>&1; then
+    ok "ccusage runner present: ccusage ($(command -v ccusage))"; return 0
+  elif command -v bunx >/dev/null 2>&1; then
+    ok "ccusage runner present: bunx ($(command -v bunx))"; return 0
+  elif command -v npx >/dev/null 2>&1; then
+    ok "ccusage runner present: npx ($(command -v npx))"; return 0
+  fi
+
+  # No runner found (uncommon — most machines have Node).
+  if [ "${INSTALL_BUN:-0}" != "1" ]; then
+    warn "no ccusage runner (ccusage/bunx/npx) found — the \$ spend figures will be hidden"
+    warn "fix: install Node.js so \`npx\` exists, or re-run with INSTALL_BUN=1 to add bun"
+    warn "everything else in the status line works without it"
+    return 0
+  fi
+
+  # Node has no clean one-line cross-platform installer; bun does, so INSTALL_BUN
+  # grabs bun (self-contained, no sudo) rather than trying to install node.
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "INSTALL_BUN=1 but no curl to fetch the installer — install bun manually (https://bun.sh)"
+    return 0
+  fi
+  info "installing bun (INSTALL_BUN=1) — powers the \$ spend figures"
+  if curl -fsSL https://bun.sh/install | bash; then
+    # bun installs to ~/.bun by default; surface it for this session's check.
+    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    if command -v bunx >/dev/null 2>&1; then
+      ok "bun installed: $(bun --version 2>/dev/null) — restart your shell to put it on PATH"
+    else
+      warn "bun installed but not on PATH yet — restart your shell and it'll be picked up"
+    fi
+  else
+    warn "bun install failed — install bun or Node.js manually to enable the \$ figures"
+  fi
+}
+
 install_jq
 
 mkdir -p "$CLAUDE_DIR"
@@ -182,6 +225,9 @@ else
   echo '{}' | merge_settings > "$SETTINGS"
   ok "settings.json created"
 fi
+
+# --- ensure a ccusage runner for the $ spend figures (optional feature) ---
+ensure_ccusage_runner
 
 echo
 ok "Done. Restart Claude Code to see the status line."
