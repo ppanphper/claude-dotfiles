@@ -303,5 +303,7 @@ else
   printf '%s\n' "$out"
 fi
 
-# Final line: the full current path in dim gray.
-printf '%s\n' "${DIM}${current_dir}${RESET}"
+# Final line: the full current path, in the same green as the dir column above
+# (its expanded form). Plain green, not faint — the old DIM (\033[2m) rendered
+# near-invisible on many terminals.
+printf '%s\n' "${GREEN}${current_dir}${RESET}"
