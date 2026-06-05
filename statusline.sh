@@ -136,12 +136,40 @@ c5=""; c7=""
 COST_CACHE="$HOME/.claude/.cost_cache"
 COST_LOCK="$HOME/.claude/.cost_cache.lock"
 COST_TTL=30
+
+# Pick a runner for ccusage. A globally-installed `ccusage` binary is fastest;
+# otherwise fall back to `bunx` (bun) or `npx` (node), which fetch it on demand.
+# Whichever exists wins; with none of them the spend figures are just omitted.
+COST_RUN=""
+if command -v ccusage >/dev/null 2>&1; then
+  COST_RUN="ccusage"
+elif command -v bunx >/dev/null 2>&1; then
+  COST_RUN="bunx ccusage"
+elif command -v npx >/dev/null 2>&1; then
+  COST_RUN="npx --yes ccusage"
+fi
+
+# Pick the platform's date/stat forms ONCE, from bash's built-in $OSTYPE — set
+# at shell startup, so this runs no probe command at all, just a string match.
+# The chosen helpers carry no fallback, so nothing is re-detected per call.
+# macOS/BSD use `date -v` / `stat -f`; GNU/Linux use `date -d` / `stat -c`.
+case "$OSTYPE" in
+  darwin*|*bsd*)
+    mtime()         { stat -f %m "$1" 2>/dev/null || echo 0; }
+    date_days_ago() { date -v-"$1"d +%Y%m%d; }
+    ;;
+  *)
+    mtime()         { stat -c %Y "$1" 2>/dev/null || echo 0; }
+    date_days_ago() { date -d "$1 days ago" +%Y%m%d; }
+    ;;
+esac
+
 refresh_costs() {
   local since b5 d7 tmp
-  since=$(date -v-6d +%Y%m%d)
-  b5=$(bunx ccusage blocks --active --json --offline 2>/dev/null \
+  since=$(date_days_ago 6)
+  b5=$($COST_RUN blocks --active --json --offline 2>/dev/null \
        | jq -r '[.blocks[]?|select(.isActive)|.costUSD]|add // empty')
-  d7=$(bunx ccusage daily --json --offline --since "$since" 2>/dev/null \
+  d7=$($COST_RUN daily --json --offline --since "$since" 2>/dev/null \
        | jq -r '.totals.totalCost // empty')
   if [ -n "${b5}${d7}" ]; then
     tmp=$(mktemp "${COST_CACHE}.XXXXXX") || return
@@ -149,17 +177,17 @@ refresh_costs() {
     mv -f "$tmp" "$COST_CACHE"
   fi
 }
-if command -v bunx >/dev/null 2>&1; then
+if [ -n "$COST_RUN" ]; then
   cnow=$(date +%s)
   stale=1
   if [ -f "$COST_CACHE" ]; then
-    age=$(( cnow - $(stat -f %m "$COST_CACHE" 2>/dev/null || echo 0) ))
+    age=$(( cnow - $(mtime "$COST_CACHE") ))
     [ "$age" -lt "$COST_TTL" ] && stale=0
   fi
   if [ "$stale" = 1 ]; then
     # Clear a lock left behind by a crashed refresh.
     if [ -d "$COST_LOCK" ]; then
-      lage=$(( cnow - $(stat -f %m "$COST_LOCK" 2>/dev/null || echo 0) ))
+      lage=$(( cnow - $(mtime "$COST_LOCK") ))
       [ "$lage" -gt 120 ] && rmdir "$COST_LOCK" 2>/dev/null
     fi
     if mkdir "$COST_LOCK" 2>/dev/null; then
