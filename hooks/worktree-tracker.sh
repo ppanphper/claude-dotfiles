@@ -31,6 +31,14 @@ esac
 target=""
 while IFS= read -r seg; do
   seg="${seg#"${seg%%[![:space:]]*}"}"
+  # RTK (`rtk hook claude`, a PreToolUse hook) rewrites `git ...` -> `rtk git ...`
+  # before the command runs, and PostToolUse sees that rewritten form. Strip a
+  # leading `rtk ` wrapper (repeatedly, just in case) so the match below still
+  # fires. Plain, un-rewritten commands are unaffected.
+  while case "$seg" in "rtk "*|"rtk"$'\t'*) true ;; *) false ;; esac; do
+    seg="${seg#rtk}"
+    seg="${seg#"${seg%%[![:space:]]*}"}"
+  done
   case "$seg" in
     "git worktree add "*|"git worktree add"$'\t'*) ;;
     *) continue ;;
