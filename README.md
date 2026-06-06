@@ -72,7 +72,9 @@ Claude Code's session CWD doesn't follow subprocess `cd`s.
 Known limits (by design, to keep the hook robust):
 
 - Only `git worktree add` is matched — not arbitrary `cd`, `git clone`, or
-  scaffolders like `cargo new`.
+  scaffolders like `cargo new`. A leading `rtk ` wrapper is stripped first, so
+  commands rewritten by RTK's `rtk hook claude` PreToolUse hook
+  (`git worktree add …` → `rtk git worktree add …`) still match.
 - Paths containing shell variables (`$VAR`) or command substitution
   (`` `…` ``, `$(…)`) are skipped.
 - Subshells like `(git worktree add ...)` are not detected.
