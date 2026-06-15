@@ -131,6 +131,11 @@ NOTIFY_SUMMARY_MAX=200
 # Telegram renders an HTML-formatted message and can hold more than a desktop
 # popup, so it gets its own (usually larger) summary budget.
 NOTIFY_TG_SUMMARY_MAX=600
+# Render the FULL reply to an image (no truncation, web-quality layout) and send
+# that instead of the text message. Needs python3 + headless Chrome (auto-falls
+# back to the text message if either is missing). See hooks/render-reply.py.
+NOTIFY_TG_IMAGE=0
+NOTIFY_TG_IMAGE_WIDTH=760
 
 NOTIFY_FOCUS_MUTE=1
 NOTIFY_TERMINAL_APPS="Terminal iTerm2 Ghostty kitty WezTerm Alacritty Warp Code Hyper Tabby rio"
@@ -310,6 +315,9 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
     tg_sum=$(printf '%s' "$tg_sum" | md2tg_html)
     [ -n "$tg_sum" ] && tg_html="${tg_html}"$'\n'"${tg_sum}"
   fi
+  # Image mode caption is just the header (the full reply is in the image).
+  tg_caption="<b>${glyph} ${tg_hdr}</b>"
+  dn=$([ "$state" = "done" ] && echo true || echo false)
   (
     api="https://api.telegram.org/bot${NOTIFY_TG_BOT_TOKEN}"
     thread=""
@@ -328,20 +336,54 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
         [ -n "$thread" ] && printf '%s\n' "$thread" > "$tf"
       fi
     fi
-    # parse_mode=HTML, but fall back to plain text if Telegram rejects the entities.
-    curl -fsS -m 10 "${api}/sendMessage" \
-      --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
-      ${thread:+--data-urlencode "message_thread_id=${thread}"} \
-      --data-urlencode "parse_mode=HTML" \
-      --data-urlencode "text=${tg_html}" \
-      --data-urlencode "disable_notification=$([ "$state" = "done" ] && echo true || echo false)" \
-      >/dev/null 2>&1 \
-    || curl -fsS -m 10 "${api}/sendMessage" \
-      --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
-      ${thread:+--data-urlencode "message_thread_id=${thread}"} \
-      --data-urlencode "text=${glyph} ${body}" \
-      --data-urlencode "disable_notification=$([ "$state" = "done" ] && echo true || echo false)" \
-      >/dev/null 2>&1
+
+    sent=0
+    # Image mode: render the FULL reply to a PNG (no truncation, web-quality
+    # layout) and send that, with the header as the caption. Needs python3 +
+    # headless Chrome; render-reply.py decides sendPhoto vs sendDocument and
+    # falls back here to the HTML text message on any failure.
+    if [ "$NOTIFY_TG_IMAGE" = "1" ] && [ -n "$summary_raw" ] && command -v python3 >/dev/null 2>&1; then
+      render=$(python3 -c "import os,sys;print(os.path.join(os.path.dirname(os.path.realpath(sys.argv[1])),'render-reply.py'))" "$0" 2>/dev/null)
+      if [ -n "$render" ] && [ -f "$render" ]; then
+        td=$(mktemp -d 2>/dev/null) || td=""
+        if [ -n "$td" ]; then
+          res=$(printf '%s' "$summary_raw" | python3 "$render" --out "$td/reply.png" --header "$title_text · $label" 2>/dev/null)
+          if [ -n "$res" ]; then
+            TAB=$(printf '\t')
+            kind=${res%%"$TAB"*}; img=${res#*"$TAB"}
+            meth="sendPhoto"; field="photo"
+            [ "$kind" = "document" ] && { meth="sendDocument"; field="document"; }
+            if [ -f "$img" ] && curl -fsS -m 60 "${api}/${meth}" \
+                 -F "chat_id=${NOTIFY_TG_CHAT_ID}" \
+                 ${thread:+-F "message_thread_id=${thread}"} \
+                 -F "${field}=@${img}" \
+                 -F "parse_mode=HTML" \
+                 -F "caption=${tg_caption}" \
+                 -F "disable_notification=${dn}" >/dev/null 2>&1; then
+              sent=1
+            fi
+          fi
+          rm -rf "$td"
+        fi
+      fi
+    fi
+
+    if [ "$sent" = "0" ]; then
+      # parse_mode=HTML, but fall back to plain text if Telegram rejects the entities.
+      curl -fsS -m 10 "${api}/sendMessage" \
+        --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
+        ${thread:+--data-urlencode "message_thread_id=${thread}"} \
+        --data-urlencode "parse_mode=HTML" \
+        --data-urlencode "text=${tg_html}" \
+        --data-urlencode "disable_notification=${dn}" \
+        >/dev/null 2>&1 \
+      || curl -fsS -m 10 "${api}/sendMessage" \
+        --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
+        ${thread:+--data-urlencode "message_thread_id=${thread}"} \
+        --data-urlencode "text=${glyph} ${body}" \
+        --data-urlencode "disable_notification=${dn}" \
+        >/dev/null 2>&1
+    fi
   ) >/dev/null 2>&1 &
 fi
 
