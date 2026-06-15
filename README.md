@@ -201,6 +201,17 @@ tags, so the message is always valid HTML (it falls back to plain text if
 Telegram ever rejects it). `NOTIFY_TG_SUMMARY_MAX` sets the Telegram length
 budget separately from the shorter desktop/title one.
 
+**Image mode** (`NOTIFY_TG_IMAGE=1`) goes further: instead of a (possibly
+truncated) text message, it renders the **full reply to an image** — Markdown →
+styled HTML (syntax-highlighted code, tables, headings, CJK) → headless Chrome
+screenshot — and sends that, with the status line as the caption. It's handled
+by [`hooks/render-reply.py`](hooks/render-reply.py), which needs `python3` +
+Chrome/Chromium (the `markdown`/`pygments`/`Pillow` Python packages improve it
+but each degrades gracefully); if Chrome is absent the hook silently falls back
+to the text message. Replies too tall for Telegram's photo limits are sent as a
+file/PDF via `sendDocument` so nothing is cut off. This is the way to see a long,
+richly-formatted reply in full on your phone.
+
 ### Two-way control (reply in Telegram to drive the session)
 
 This hook is **outbound only** — it can't turn a Telegram reply into the next

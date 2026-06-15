@@ -169,7 +169,7 @@ add_claude_tg_alias() {
 # block is delimited by sentinels and rewritten in place, so re-running the
 # installer updates it rather than stacking duplicates.
 write_tg_conf() {
-  # $1 = bot token, $2 = chat id, $3 = forum (1/0)
+  # $1 = bot token, $2 = chat id, $3 = forum (1/0), $4 = image mode (1/0)
   local s="# >>> claude-dotfiles telegram (managed) >>>"
   local e="# <<< claude-dotfiles telegram (managed) <<<"
   local tmp; tmp=$(mktemp)
@@ -184,6 +184,7 @@ write_tg_conf() {
     printf 'NOTIFY_TG_CHAT_ID="%s"\n' "$2"
     printf 'NOTIFY_TG_FORUM=%s\n' "$3"
     printf 'NOTIFY_WAIT_TG=1\n'
+    printf 'NOTIFY_TG_IMAGE=%s\n' "${4:-0}"
     printf '%s\n' "$e"
   } >> "$tmp"
   mv "$tmp" "$NOTIFY_CONF"
@@ -330,8 +331,19 @@ setup_telegram() {
     esac
   fi
 
-  write_tg_conf "$token" "$chat" "$forum"
+  # Image mode: render the full reply to an image (needs python3 + headless
+  # Chrome; degrades to text if either is missing).
+  local image=0
+  if command -v python3 >/dev/null 2>&1; then
+    printf '\n   Send the FULL reply as a rendered image (web-quality layout, no\n'
+    printf '   truncation; needs headless Chrome — falls back to text if absent)? [y/N] '
+    local im; read -r im || true
+    case "$im" in [yY]*) image=1 ;; esac
+  fi
+
+  write_tg_conf "$token" "$chat" "$forum" "$image"
   ok "Telegram push enabled in $NOTIFY_CONF"
+  [ "$image" = "1" ] && ok "image mode on (NOTIFY_TG_IMAGE=1)"
 
   if command -v curl >/dev/null 2>&1; then
     if curl -s -o /dev/null --fail "https://api.telegram.org/bot${token}/sendMessage" \
@@ -422,6 +434,21 @@ elif [ -e "$NOTIFY_LINK" ] || [ -L "$NOTIFY_LINK" ]; then
 else
   ln -s "$NOTIFY_TARGET" "$NOTIFY_LINK"
   ok "notify hook symlink created: $NOTIFY_LINK → $NOTIFY_TARGET"
+fi
+
+# --- symlink hooks/render-reply.py (optional: NOTIFY_TG_IMAGE renderer) -------
+# notify.sh finds it via realpath($0), so this is just for discoverability.
+RENDER_TARGET="$INSTALL_DIR/hooks/render-reply.py"
+RENDER_LINK="$HOOKS_DIR/render-reply.py"
+if [ -f "$RENDER_TARGET" ]; then
+  chmod +x "$RENDER_TARGET"
+  if [ -L "$RENDER_LINK" ] && [ "$(readlink "$RENDER_LINK")" = "$RENDER_TARGET" ]; then
+    :
+  else
+    [ -e "$RENDER_LINK" ] || [ -L "$RENDER_LINK" ] && mv "$RENDER_LINK" "${RENDER_LINK}.bak.$(date +%s)"
+    ln -s "$RENDER_TARGET" "$RENDER_LINK"
+    ok "reply-image renderer symlinked: $RENDER_LINK"
+  fi
 fi
 
 # --- seed ~/.claude/notify.conf from the example (never overwrite user edits) ---

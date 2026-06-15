@@ -78,6 +78,15 @@ NOTIFY_SUMMARY_MAX=200      # desktop/title summary: truncate to this many chars
 # desktop popup, so it gets its own (larger) length budget.
 NOTIFY_TG_SUMMARY_MAX=600
 
+# Render the FULL reply to an IMAGE and send that instead of the text message —
+# no truncation, web-quality layout (syntax-highlighted code, tables, headings).
+# Needs python3 + headless Chrome (hooks/render-reply.py); if either is missing,
+# it silently falls back to the HTML text message above. Long replies that
+# exceed Telegram's photo limits are sent as a file/PDF (sendDocument) so nothing
+# is cut off. NOTIFY_TG_IMAGE_WIDTH is the render width in px (before 2x scaling).
+NOTIFY_TG_IMAGE=0
+NOTIFY_TG_IMAGE_WIDTH=760
+
 # ── Focus-aware mute (macOS only) ────────────────────────────────────────────
 # When a terminal is the frontmost app — i.e. you're already watching — suppress
 # the LOCAL loud channels (bell/desktop/sound). The silent tab glyph and remote
