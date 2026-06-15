@@ -1,0 +1,121 @@
+# notify.conf — configuration for hooks/notify.sh
+#
+# Copy to ~/.claude/notify.conf and edit. It's sourced as a shell file, so use
+# KEY=value with no spaces around `=`. Every key is optional; anything you omit
+# keeps the default shown here. Lines starting with # are comments.
+#
+# The installer creates ~/.claude/notify.conf from this example only if one
+# doesn't already exist, so your edits are never overwritten on update.
+
+# Master switch. 0 disables all notifications without touching settings.json.
+NOTIFY_ENABLED=1
+
+# ── Per-state channels (1=on, 0=off) ────────────────────────────────────────
+# A channel also auto-skips if its tool/config is missing, so turning one on is
+# safe even where it can't run.
+#
+#   done = Claude finished a turn        (default: quiet)
+#   wait = Claude needs your input/perm  (default: loud — bell + desktop popup)
+#
+# TITLE = tab-title glyph (often overwritten by Claude Code — see below)
+# BELL = terminal bell   DESKTOP = OS popup   SOUND = play a sound
+# TG = Telegram push (see below).  iTerm2 tab COLOR is set separately, below.
+
+NOTIFY_DONE_TITLE=0; NOTIFY_DONE_BELL=0; NOTIFY_DONE_DESKTOP=0; NOTIFY_DONE_SOUND=0; NOTIFY_DONE_TG=0
+NOTIFY_WAIT_TITLE=0; NOTIFY_WAIT_BELL=1; NOTIFY_WAIT_DESKTOP=1; NOTIFY_WAIT_SOUND=0; NOTIFY_WAIT_TG=1
+
+# ── iTerm2 tab color (the most reliable visual "done" indicator) ─────────────
+# "R G B" (0-255), empty = off. iTerm2 only. The hook writes OSC 6 to the
+# `claude` process's pty (a hook has no controlling terminal, so /dev/tty won't
+# work — it climbs the process tree to find the real pty). Unlike the title,
+# Claude Code never overwrites the tab color. NOTIFY_TABCOLOR_RESET clears it on
+# your next prompt (UserPromptSubmit), so a colored tab = unread output.
+NOTIFY_DONE_TABCOLOR="40 200 80"     # green
+NOTIFY_WAIT_TABCOLOR="230 180 40"    # amber
+NOTIFY_TABCOLOR_RESET=1
+
+# Animated "processing" progress bar on the tab while Claude is working — the
+# moving bar starts when you submit a prompt and stops when the turn ends (or
+# Claude needs you). Uses iTerm2's OSC 9;4 indeterminate progress, auto-detected
+# via TERM_FEATURES (iTerm2 3.6.x+); silently ignored on any other terminal.
+NOTIFY_PROGRESS=1
+
+# On iTerm2, the desktop channel uses iTerm2's native OSC 9 notification, which
+# you can CLICK to jump straight to that tab. iTerm2 decides visibility itself
+# (no popup when that tab is already focused), so this path ignores focus-mute.
+# Set to 0 to use terminal-notifier/osascript instead. Non-iTerm2 terminals
+# always use terminal-notifier/osascript (mac) or notify-send (linux).
+NOTIFY_DESKTOP_OSC9=1
+
+# ── Tab-title glyphs (only when *_TITLE above is 1) ──────────────────────────
+# Claude Code manages the terminal title itself and will overwrite this on the
+# next render. To keep it, also set in ~/.claude/settings.json:
+#   "env": { "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1" }
+# Any string; emoji show as a colored dot. e.g. 🟢 🔵 🟡 🔴 ✅ ⏳ ●
+NOTIFY_GLYPH_DONE="🟢"
+NOTIFY_GLYPH_WAIT="🟡"
+
+# State labels (shown in title / desktop / Telegram). Localize freely.
+NOTIFY_LABEL_DONE="Claude done"
+NOTIFY_LABEL_WAIT="Claude waiting"
+
+# ── Sound files (only when the matching *_SOUND above is 1) ──────────────────
+# Empty → a platform default. macOS: any /System/Library/Sounds/*.aiff
+# (Glass, Funk, Hero, Ping, Submarine, Pop…). Linux: a path paplay can play.
+# Tip: pick two distinct sounds for done vs wait and your ear learns them fast.
+NOTIFY_SOUND_DONE=""
+NOTIFY_SOUND_WAIT=""
+
+# ── Message content ──────────────────────────────────────────────────────────
+# Include the git branch + a one-line summary (last assistant message / the
+# notification text) in desktop popups and Telegram messages.
+NOTIFY_SUMMARY=1
+NOTIFY_SUMMARY_MAX=200      # desktop/title summary: truncate to this many chars
+
+# Telegram messages are sent as HTML (parse_mode=HTML): the assistant's
+# **bold** / `code` / # headings / - bullets render properly instead of showing
+# raw markdown, and tables collapse to "a · b" rows. Telegram holds more than a
+# desktop popup, so it gets its own (larger) length budget.
+NOTIFY_TG_SUMMARY_MAX=600
+
+# ── Focus-aware mute (macOS only) ────────────────────────────────────────────
+# When a terminal is the frontmost app — i.e. you're already watching — suppress
+# the LOCAL loud channels (bell/desktop/sound). The silent tab glyph and remote
+# Telegram push still fire (you might have walked away with the terminal up).
+# Needs Accessibility permission for your terminal app: System Settings >
+# Privacy & Security > Accessibility. If denied, it fails open (you still get
+# notified). NOTIFY_TERMINAL_APPS is the space-separated frontmost-app names
+# that count as "a terminal" — add yours if it's missing.
+NOTIFY_FOCUS_MUTE=1
+NOTIFY_TERMINAL_APPS="Terminal iTerm2 Ghostty kitty WezTerm Alacritty Warp Code Hyper Tabby rio"
+
+# ── Telegram push (remote — get notified away from your desk) ────────────────
+# 1. Create a bot with @BotFather → copy the token into NOTIFY_TG_BOT_TOKEN.
+# 2. Get your chat id: message the bot, then open
+#    https://api.telegram.org/bot<TOKEN>/getUpdates and read result[].message.chat.id
+#    (a personal chat id, or a group/supergroup id starting with -100…).
+# Leave the token empty to disable. Controlled per state via *_TG above.
+NOTIFY_TG_BOT_TOKEN=""
+NOTIFY_TG_CHAT_ID=""
+
+# One forum topic per Claude session (so each session is its own thread). The
+# chat must be a forum supergroup (Group → Edit → Topics on) and the bot an
+# admin with "Manage Topics". The topic is named "project ⎇ branch · <short
+# session id>" (the suffix keeps two sessions of the same project/branch as
+# separate topics) and its id is cached in ~/.claude/.tg_topic_<session_id> so
+# later messages reuse it. Off → plain messages to the group, prefixed with project.
+NOTIFY_TG_FORUM=0
+
+# When the session ends (SessionEnd hook), what to do with its forum topic:
+#   close  = archive it — keeps history, folds it into the group's "closed" list
+#   delete = remove the topic and all its messages (irreversible)
+#   cache  = only delete the local ~/.claude/.tg_topic_<id> file, leave the topic
+#   off    = do nothing
+# Either way the per-session cache file is removed (except "off"). Closing/deleting
+# needs the bot to be a group admin with "Manage Topics".
+NOTIFY_TG_TOPIC_CLEANUP=close
+
+# Want to also REPLY in Telegram to drive the session (issue new tasks)? A hook
+# can't inject prompts into a running session — that's Claude Code's official
+# bidirectional "Channels" feature, not this hook. See the README "Two-way
+# control" note: launch `claude --channels plugin:telegram@claude-plugins-official`.

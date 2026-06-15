@@ -124,6 +124,233 @@ ensure_ccusage_runner() {
   fi
 }
 
+# Install bun if missing (the Telegram plugin's MCP server runs on it). Returns
+# non-zero if it still isn't available afterward.
+try_install_bun() {
+  command -v bun >/dev/null 2>&1 && return 0
+  command -v curl >/dev/null 2>&1 || { warn "no curl to fetch bun — install it manually: https://bun.sh"; return 1; }
+  info "installing bun (the Telegram plugin's MCP server needs it)…"
+  if curl -fsSL https://bun.sh/install | bash; then
+    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    command -v bun >/dev/null 2>&1 && { ok "bun installed: $(bun --version 2>/dev/null) — restart your shell to keep it on PATH"; return 0; }
+  fi
+  warn "bun install didn't complete — install it manually (https://bun.sh) and re-run."
+  return 1
+}
+
+# Append a line to a shell rc file exactly once (idempotent). $1 = rc path, $2 = line.
+append_line_once() {
+  [ -f "$1" ] || : > "$1"
+  grep -qF "$2" "$1" 2>/dev/null && return 0
+  printf '\n%s\n' "$2" >> "$1"
+}
+
+# Offer to add the `claude-tg` alias to the user's shell rc so two-way sessions
+# are one word instead of the long --channels flag.
+add_claude_tg_alias() {
+  local line="alias claude-tg='claude --channels plugin:telegram@claude-plugins-official'"
+  local rc=""
+  case "${SHELL##*/}" in
+    zsh)  rc="$HOME/.zshrc" ;;
+    bash) rc="$HOME/.bashrc" ;;
+    *)    rc="${ENV:-$HOME/.profile}" ;;
+  esac
+  printf "      Add 'claude-tg' alias to %s? [y/N] " "$rc"
+  local a; read -r a || return 0
+  case "$a" in
+    [yY]*) append_line_once "$rc" "$line" && ok "alias added to $rc (run: source $rc)" ;;
+    *)     info "Skipped. You can add it yourself: $line" ;;
+  esac
+}
+
+# Write the managed Telegram block to notify.conf. notify.conf is sourced and we
+# append at the end, so these assignments win over the defaults above them. The
+# block is delimited by sentinels and rewritten in place, so re-running the
+# installer updates it rather than stacking duplicates.
+write_tg_conf() {
+  # $1 = bot token, $2 = chat id, $3 = forum (1/0)
+  local s="# >>> claude-dotfiles telegram (managed) >>>"
+  local e="# <<< claude-dotfiles telegram (managed) <<<"
+  local tmp; tmp=$(mktemp)
+  if [ -f "$NOTIFY_CONF" ]; then
+    awk -v s="$s" -v e="$e" '
+      $0==s {skip=1; next} skip && $0==e {skip=0; next} !skip {print}
+    ' "$NOTIFY_CONF" > "$tmp"
+  fi
+  {
+    printf '%s\n' "$s"
+    printf 'NOTIFY_TG_BOT_TOKEN="%s"\n' "$1"
+    printf 'NOTIFY_TG_CHAT_ID="%s"\n' "$2"
+    printf 'NOTIFY_TG_FORUM=%s\n' "$3"
+    printf 'NOTIFY_WAIT_TG=1\n'
+    printf '%s\n' "$e"
+  } >> "$tmp"
+  mv "$tmp" "$NOTIFY_CONF"
+}
+
+# Install + configure the official Telegram plugin (the *reply* half). The push
+# hook only sends and the plugin only receives, so reusing one bot is fine. We
+# also pre-write access.json (allowlist) so the user skips the pairing dance.
+# $1 = bot token, $2 = the push chat id (group → enabled for group replies).
+setup_telegram_channels() {
+  local token="$1" chat="$2"
+  command -v claude >/dev/null 2>&1 || { warn "claude CLI not on PATH — install Claude Code, then see README 'Two-way control'."; return 0; }
+  if ! command -v bun >/dev/null 2>&1; then
+    printf '      The two-way plugin needs bun. Install it now? [Y/n] '
+    local b; read -r b || true
+    case "$b" in [nN]*) warn "skipping two-way — install bun (https://bun.sh) and re-run."; return 0 ;; esac
+    try_install_bun || return 0
+  fi
+  info "Installing official Telegram plugin…"
+  claude plugin marketplace update claude-plugins-official >/dev/null 2>&1 || true
+  if claude plugin install telegram@claude-plugins-official >/dev/null 2>&1; then
+    ok "plugin installed: telegram@claude-plugins-official"
+  else
+    warn "plugin install failed — run manually: claude plugin install telegram@claude-plugins-official"
+  fi
+  local envdir="$CLAUDE_DIR/channels/telegram"
+  mkdir -p "$envdir"
+  ( umask 077; printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" > "$envdir/.env" )
+  chmod 600 "$envdir/.env" 2>/dev/null || true
+  ok "token written: $envdir/.env"
+
+  # --- access control: write access.json so pairing isn't needed -------------
+  printf '\n   Who may drive Claude through this bot? (allowlist — skips pairing)\n'
+  printf '      Your Telegram numeric user id (from @userinfobot; blank to skip): '
+  local uid; read -r uid || true
+  case "$uid" in *[!0-9]*) [ -n "$uid" ] && warn "not a numeric id — ignoring it."; uid="" ;; esac
+
+  # A negative push chat id is a group/supergroup — offer to enable group replies.
+  local grp=""
+  case "$chat" in -[0-9]*) grp="$chat" ;; esac
+
+  if [ -z "$uid" ] && [ -z "$grp" ]; then
+    info "No id given — leaving the default 'pairing' policy."
+    info "Approve later in Claude with: /telegram:access pair <code>"
+  else
+    local af="[]"; [ -n "$uid" ] && af="[\"$uid\"]"
+    local groups="{}"
+    [ -n "$grp" ] && groups="{\"$grp\":{\"requireMention\":true,\"allowFrom\":$af}}"
+    if command -v jq >/dev/null 2>&1; then
+      ( umask 077; jq -n --argjson af "$af" --argjson g "$groups" \
+          '{dmPolicy:"allowlist", allowFrom:$af, groups:$g}' > "$envdir/access.json" )
+    else
+      ( umask 077; printf '{"dmPolicy":"allowlist","allowFrom":%s,"groups":%s}\n' "$af" "$groups" > "$envdir/access.json" )
+    fi
+    chmod 600 "$envdir/access.json" 2>/dev/null || true
+    ok "access.json written (allowlist — no pairing needed)"
+    if [ -n "$grp" ]; then
+      info "Group $grp enabled — reply to the bot's messages there to drive Claude."
+      warn "For group replies/topics, make the bot a group ADMIN with 'Manage Topics'."
+    fi
+  fi
+
+  add_claude_tg_alias
+
+  printf '\n   %b\n' "${CYAN}Finish two-way (interactive — run these yourself):${RESET}"
+  printf '     1. Start a two-way session with:  %s\n' "claude-tg"
+  printf '        (or the full: claude --channels plugin:telegram@claude-plugins-official)\n'
+  printf '     2. DM the bot (or reply to it in the group) — it reaches Claude.\n'
+  [ -z "$uid" ] && printf '     3. If you skipped the id: /telegram:access pair <code> to approve yourself.\n'
+}
+
+# Optional guided Telegram setup. Only runs with a real terminal (skipped under
+# `curl | bash`, where stdin is the script). Opt out with SKIP_TELEGRAM_SETUP=1.
+setup_telegram() {
+  [ "${SKIP_TELEGRAM_SETUP:-0}" = "1" ] && return 0
+  if [ ! -t 0 ]; then
+    info "Telegram alerts (push + optional two-way replies) are available."
+    info "To set them up, run this installer in a terminal: bash \"$INSTALL_DIR/install.sh\""
+    return 0
+  fi
+  # Already configured? (real token in notify.conf) → don't re-prompt.
+  if [ -f "$NOTIFY_CONF" ] && grep -q '^NOTIFY_TG_BOT_TOKEN="[0-9]' "$NOTIFY_CONF" 2>/dev/null; then
+    ok "Telegram already configured in notify.conf (left untouched)"
+    return 0
+  fi
+
+  printf '\n'
+  info "Optional: Telegram notifications"
+  printf '   %s\n' "Get Claude's done/waiting alerts — with a summary — on your phone,"
+  printf '   %s\n' "even when you're away from your desk."
+  printf '   Set up Telegram push now? [y/N] '
+  local reply; read -r reply || return 0
+  case "$reply" in [yY]*) ;; *) info "Skipped. Add it later by editing $NOTIFY_CONF."; return 0 ;; esac
+
+  printf '\n   1) Create a bot: open @BotFather in Telegram, send /newbot, copy the token.\n'
+  printf '      Bot token (blank to skip): '
+  local token; read -r token || return 0
+  [ -z "$token" ] && { warn "no token — skipping Telegram setup."; return 0; }
+
+  # Validate the token and learn the bot's name in one call.
+  local botname=""
+  if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    botname=$(curl -s "https://api.telegram.org/bot${token}/getMe" 2>/dev/null | jq -r 'select(.ok).result.username // empty' 2>/dev/null) || true
+    if [ -z "$botname" ]; then
+      warn "couldn't verify that token with Telegram — double-check it. Continuing anyway."
+    else
+      ok "bot verified: @$botname"
+    fi
+  fi
+
+  printf '\n   2) Message your bot once (any text), then we auto-detect your chat id.\n'
+  printf '      Press Enter to auto-detect, or paste a chat id: '
+  local chat; read -r chat || return 0
+  if [ -z "$chat" ] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    chat=$(curl -s "https://api.telegram.org/bot${token}/getUpdates" 2>/dev/null \
+      | jq -r '[.result[]?.message.chat.id] | last // empty' 2>/dev/null) || true
+    [ -n "$chat" ] && ok "detected chat id: $chat"
+  fi
+  if [ -z "$chat" ]; then
+    warn "no chat id — message your bot first, then paste the id."
+    printf '      Chat id (blank to skip): '
+    read -r chat || return 0
+    [ -z "$chat" ] && { warn "no chat id — skipping Telegram setup."; return 0; }
+  fi
+
+  # Per-session forum topics need a real forum supergroup — a plain group or DM
+  # can't have topics, so enable it only when getChat confirms is_forum (this is
+  # the exact trap of "forum=1 on a basic group" that silently sends nothing).
+  local forum=0
+  if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    case "$chat" in
+      -*)
+        local isf
+        isf=$(curl -s "https://api.telegram.org/bot${token}/getChat" \
+                --data-urlencode "chat_id=${chat}" 2>/dev/null \
+              | jq -r 'select(.ok).result.is_forum // false' 2>/dev/null) || true
+        if [ "$isf" = "true" ]; then
+          forum=1; ok "forum supergroup detected — each session gets its own topic."
+        else
+          info "not a forum supergroup — using plain group messages."
+          info "(turn on Topics in the group + make the bot admin, then re-run for per-session topics.)"
+        fi
+        ;;
+    esac
+  fi
+
+  write_tg_conf "$token" "$chat" "$forum"
+  ok "Telegram push enabled in $NOTIFY_CONF"
+
+  if command -v curl >/dev/null 2>&1; then
+    if curl -s -o /dev/null --fail "https://api.telegram.org/bot${token}/sendMessage" \
+        --data-urlencode "chat_id=${chat}" \
+        --data-urlencode "text=✅ claude-dotfiles: Telegram push is configured." 2>/dev/null; then
+      ok "sent a test message — check Telegram."
+    else
+      warn "test send failed — verify the chat id and that you've messaged the bot."
+    fi
+  fi
+
+  printf '\n   Also REPLY in Telegram to drive Claude (official Channels plugin)? [y/N] '
+  local reply2; read -r reply2 || return 0
+  case "$reply2" in
+    [yY]*) setup_telegram_channels "$token" "$chat" ;;
+    *) info "Push-only for now. Add two-way later — see README 'Two-way control'." ;;
+  esac
+}
+
 install_jq
 
 mkdir -p "$CLAUDE_DIR"
@@ -178,13 +405,52 @@ else
   ok "hook symlink created: $HOOK_LINK → $HOOK_TARGET"
 fi
 
+# --- symlink hooks/notify.sh (Stop + Notification alerts) ---
+NOTIFY_TARGET="$INSTALL_DIR/hooks/notify.sh"
+NOTIFY_LINK="$HOOKS_DIR/notify.sh"
+[ -f "$NOTIFY_TARGET" ] || die "$NOTIFY_TARGET not found"
+chmod +x "$NOTIFY_TARGET"
+
+if [ -L "$NOTIFY_LINK" ] && [ "$(readlink "$NOTIFY_LINK")" = "$NOTIFY_TARGET" ]; then
+  ok "notify hook symlink already in place: $NOTIFY_LINK"
+elif [ -e "$NOTIFY_LINK" ] || [ -L "$NOTIFY_LINK" ]; then
+  BACKUP="${NOTIFY_LINK}.bak.$(date +%s)"
+  warn "existing $NOTIFY_LINK backed up → $BACKUP"
+  mv "$NOTIFY_LINK" "$BACKUP"
+  ln -s "$NOTIFY_TARGET" "$NOTIFY_LINK"
+  ok "notify hook symlink created: $NOTIFY_LINK → $NOTIFY_TARGET"
+else
+  ln -s "$NOTIFY_TARGET" "$NOTIFY_LINK"
+  ok "notify hook symlink created: $NOTIFY_LINK → $NOTIFY_TARGET"
+fi
+
+# --- seed ~/.claude/notify.conf from the example (never overwrite user edits) ---
+NOTIFY_CONF_EXAMPLE="$INSTALL_DIR/notify.conf.example"
+NOTIFY_CONF="$CLAUDE_DIR/notify.conf"
+if [ -f "$NOTIFY_CONF" ]; then
+  ok "notify.conf already present (left untouched): $NOTIFY_CONF"
+elif [ -f "$NOTIFY_CONF_EXAMPLE" ]; then
+  cp "$NOTIFY_CONF_EXAMPLE" "$NOTIFY_CONF"
+  ok "notify.conf created from example: $NOTIFY_CONF"
+fi
+
 # --- update settings.json ---
 DESIRED_STATUSLINE='{"type":"command","command":"'"$CLAUDE_DIR"'/statusline.sh","padding":0}'
 HOOK_CMD="$CLAUDE_DIR/hooks/worktree-tracker.sh"
+NOTIFY_CMD="$CLAUDE_DIR/hooks/notify.sh"
 
 merge_settings() {
   # $1 = current settings.json content (or "{}" if none)
-  jq --argjson sl "$DESIRED_STATUSLINE" --arg hook "$HOOK_CMD" '
+  jq --argjson sl "$DESIRED_STATUSLINE" --arg hook "$HOOK_CMD" --arg notify "$NOTIFY_CMD" '
+    # Ensure an event group (Stop/Notification) carries our command exactly once,
+    # leaving any other hooks the user already has on that event intact.
+    def ensure_event($key):
+      .hooks[$key] = (
+        (.hooks[$key] // []) as $arr
+        | if ($arr | any(((.hooks // []) | any(.command == $notify)))) then $arr
+          else $arr + [{matcher:"", hooks:[{type:"command", command:$notify}]}]
+          end
+      );
     .statusLine = $sl
     | .hooks.PostToolUse = (
         (.hooks.PostToolUse // []) as $arr
@@ -202,6 +468,10 @@ merge_settings() {
             $arr + [{matcher:"Bash", hooks:[{type:"command", command:$hook}]}]
           end
       )
+    | ensure_event("Stop")
+    | ensure_event("Notification")
+    | ensure_event("UserPromptSubmit")
+    | ensure_event("SessionEnd")
   '
 }
 
@@ -228,6 +498,9 @@ fi
 
 # --- ensure a ccusage runner for the $ spend figures (optional feature) ---
 ensure_ccusage_runner
+
+# --- optional guided Telegram setup (interactive terminals only) ---
+setup_telegram
 
 echo
 ok "Done. Restart Claude Code to see the status line."

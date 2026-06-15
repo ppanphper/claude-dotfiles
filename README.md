@@ -89,6 +89,139 @@ Known limits (by design, to keep the hook robust):
 State is per-session (keyed by `session_id`), so concurrent Claude sessions
 don't interfere with each other.
 
+## Done / waiting notifications
+
+A `hooks/notify.sh` hook fires on three Claude Code events and alerts you so you
+don't have to babysit the terminal:
+
+- **`Stop`** — Claude finished a turn → state **done** (🟢 by default)
+- **`Notification`** — Claude needs your input or a permission confirmation →
+  state **waiting** (🟡 by default)
+- **`UserPromptSubmit`** — you sent a prompt → state **reset** (clears the tab
+  color, so a colored tab always means "has output you haven't acted on", and
+  starts the animated "processing" progress bar — see below)
+
+Each state alerts through up to six channels, every one of which is toggled
+independently and auto-skipped if the tool/config it needs isn't present:
+
+| Channel | How | macOS | Linux |
+| --- | --- | --- | --- |
+| **iTerm2 tab color** | OSC 6 — colors the *tab* (green done / amber waiting); Claude Code's own title writes don't clobber it | ✅ iTerm2 | — |
+| **Tab-title glyph** | OSC 0 title — Claude Code overwrites it unless you set `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` | ✅ | ✅ |
+| **Terminal bell** | `\a` | ✅ | ✅ |
+| **Desktop notification** | `terminal-notifier` → `osascript` / `notify-send` | ✅ | needs `notify-send` |
+| **Sound** | `afplay` / `paplay` / `canberra-gtk-play` | ✅ | needs PulseAudio/canberra |
+| **Telegram push** | `curl` to the Bot API — remote alerts on your phone, optionally one forum topic per session | ✅ | ✅ |
+
+The first three channels write terminal escape codes, but **a Claude Code hook
+has no controlling terminal** — `/dev/tty` can't be opened. So the hook walks up
+the process tree to the `claude` process, which still owns the pty (e.g.
+`/dev/ttys003`), and writes the escape codes straight to that device. The tab
+color (OSC 6) is the most useful of these: it persists per-tab, survives Claude
+Code's title writes, and is cleared on your next prompt — so a glance across your
+iTerm2 tabs shows which sessions have unread output. Desktop and Telegram
+messages carry the git branch and a one-line summary (the last assistant message
+on `Stop`; for a waiting `Notification`, the last assistant text read from the
+session transcript).
+
+On iTerm2 3.6.x+ the hook also shows an **animated "processing" progress bar** on
+the tab (OSC 9;4 indeterminate) — it starts when you submit a prompt and clears
+when the turn ends or Claude needs you, so a glance shows which tabs are still
+working. It's auto-detected via `TERM_FEATURES` and silently skipped elsewhere;
+turn it off with `NOTIFY_PROGRESS=0`. Note there's **no "tab gained focus" event**
+in Claude Code, so the tab color clears on your *next prompt*, not on focus —
+a hook can't be triggered by you clicking back onto the tab.
+
+### Defaults and configuration
+
+By default the **done** state is *quiet* (no bell/popup on every reply while
+you're watching) and the **waiting** state is *loud* (bell + desktop popup).
+Everything is configured in `~/.claude/notify.conf` (a `KEY=value` shell file the
+installer seeds from [`notify.conf.example`](notify.conf.example) and never
+overwrites on update). You can flip any channel per state, set iTerm2 tab colors,
+pick sounds, or set `NOTIFY_ENABLED=0` to mute everything:
+
+```bash
+# ~/.claude/notify.conf
+NOTIFY_DONE_TABCOLOR="40 200 80"   # green iTerm2 tab when a turn finishes
+NOTIFY_WAIT_TABCOLOR="230 180 40"  # amber tab when Claude needs you
+NOTIFY_DONE_DESKTOP=1              # also pop a desktop notification on done
+NOTIFY_WAIT_SOUND=1                # play a sound when Claude needs input
+```
+
+Claude Code also has a built-in notifier (`preferredNotifChannel` in
+`settings.json`, e.g. `"terminal_bell"` or `"iterm2_with_bell"`). It runs
+*alongside* this hook, so enable one or the other to avoid a double bell.
+
+### Focus-aware mute (macOS)
+
+`NOTIFY_FOCUS_MUTE=1` (on by default) suppresses the **local loud** channels
+(bell / desktop / sound) when a terminal is already the frontmost app — so you
+don't get pinged while you're watching Claude work. The silent tab glyph and the
+remote Telegram push still fire (you may have walked away with the terminal up).
+It detects the frontmost app via `osascript`, which needs Accessibility
+permission for your terminal (**System Settings → Privacy & Security →
+Accessibility**); if that's denied it fails open and you still get notified.
+`NOTIFY_TERMINAL_APPS` lists which app names count as "a terminal" — add yours if
+it's missing.
+
+### Telegram push (get pinged away from your desk)
+
+Set a bot token + chat id in `~/.claude/notify.conf` and the **waiting** state
+(by default) pushes to your phone:
+
+```bash
+# ~/.claude/notify.conf
+NOTIFY_TG_BOT_TOKEN="123456:ABC-your-bot-token"   # from @BotFather
+NOTIFY_TG_CHAT_ID="-1001234567890"                 # your chat / group id
+NOTIFY_TG_FORUM=1                                   # one forum topic per session
+NOTIFY_DONE_TG=1                                    # also push on completion
+```
+
+With `NOTIFY_TG_FORUM=1`, each Claude session gets its **own forum topic** (the
+chat must be a forum supergroup and the bot an admin with *Manage Topics*), named
+`project ⎇ branch · <short session id>` — the suffix keeps two sessions of the
+same project/branch as distinct topics. The topic id is cached in
+`~/.claude/.tg_topic_<session_id>` (mirroring the worktree-tracker's per-session
+file pattern) so subsequent messages reuse the same topic. "done" pushes are sent
+silently (`disable_notification`), "waiting" pushes ring.
+
+When the session ends, the **`SessionEnd`** hook cleans the topic up so they don't
+pile up: `NOTIFY_TG_TOPIC_CLEANUP=close` (default) archives it into the group's
+"closed" list keeping the history, `delete` removes it entirely, `cache` only
+drops the local cache file, `off` does nothing. (Note: `Stop` is *per-turn*, not
+end-of-session — cleaning up there would delete the topic mid-conversation, so
+this is wired to `SessionEnd` instead.)
+
+Telegram messages are sent with `parse_mode=HTML`: the assistant's markdown
+(`**bold**`, `` `code` ``, `#` headings, `-` bullets) is converted to real
+formatting instead of showing the raw symbols, and markdown tables collapse to
+readable `a · b` rows. The converter HTML-escapes first and only inserts balanced
+tags, so the message is always valid HTML (it falls back to plain text if
+Telegram ever rejects it). `NOTIFY_TG_SUMMARY_MAX` sets the Telegram length
+budget separately from the shorter desktop/title one.
+
+### Two-way control (reply in Telegram to drive the session)
+
+This hook is **outbound only** — it can't turn a Telegram reply into the next
+prompt, because a hook can't inject input into a running Claude Code session.
+That's exactly what Claude Code's official **Channels** feature does, and it's
+genuinely bidirectional. The installer's guided Telegram setup wires it up for
+you (installs the `telegram@claude-plugins-official` plugin, writes its token and
+an `access.json` allowlist so you skip pairing, and offers a `claude-tg` alias).
+Then start a two-way session with:
+
+```bash
+claude-tg   # = claude --channels plugin:telegram@claude-plugins-official
+```
+
+The flag is **per session** — only sessions launched with it bridge to Telegram,
+and a reply drives *that* session. DM the bot or reply to its messages in the
+group to send the next prompt. (Requires Claude Code v2.1.80+, a claude.ai
+Pro/Max plan or Console API key, and the `bun` runtime — the installer offers to
+install `bun` if it's missing.) Avoid building a `tmux send-keys` listener for
+this — it's fragile and Channels is the supported path.
+
 ## Install
 
 ### One-line install
@@ -107,11 +240,15 @@ The installer:
 3. Symlinks `~/.claude/statusline.sh` → the repo's `statusline.sh`. Any
    pre-existing file at that path is backed up to
    `~/.claude/statusline.sh.bak.<timestamp>`.
-4. Symlinks `~/.claude/hooks/worktree-tracker.sh` → the repo's hook (same
-   backup behavior).
-5. Merges `statusLine` and a `PostToolUse` → `Bash` → `worktree-tracker.sh`
-   entry into `~/.claude/settings.json`, preserving every other field and
-   any other Bash hooks you've configured. The original file is backed up
+4. Symlinks `~/.claude/hooks/worktree-tracker.sh` and
+   `~/.claude/hooks/notify.sh` → the repo's hooks (same backup behavior), and
+   seeds `~/.claude/notify.conf` from `notify.conf.example` if you don't already
+   have one (your existing config is never overwritten).
+5. Merges `statusLine`, a `PostToolUse` → `Bash` → `worktree-tracker.sh` entry,
+   and `Stop` + `Notification` + `UserPromptSubmit` + `SessionEnd` → `notify.sh`
+   entries into
+   `~/.claude/settings.json`, preserving every other field and any other hooks
+   you've configured. The original file is backed up
    to `settings.json.bak.<timestamp>` before any change is written, and the
    new file is written atomically via `mktemp` + `mv`. Re-running the
    installer is idempotent — no duplicate entries are added.
@@ -120,8 +257,18 @@ The installer:
    have, so this usually just passes. If none is found it prints how to enable
    the figures and continues — pass `INSTALL_BUN=1` to also auto-install `bun`
    (the figures stay hidden meanwhile; everything else works).
+7. **When run in a terminal** (not piped), offers a guided Telegram setup:
+   validates your bot token, auto-detects the chat id, writes the push config to
+   `notify.conf`, and — if you opt into two-way replies — installs the official
+   Telegram plugin, installs `bun` if needed, writes its token + an `access.json`
+   allowlist (so you skip pairing), and offers to add a `claude-tg` alias. Run
+   `bash ~/claude-dotfiles/install.sh` from a terminal to reach this step; under
+   `curl | bash` it's skipped (stdin isn't a TTY) and the installer says so. Opt
+   out with `SKIP_TELEGRAM_SETUP=1`.
 
-Restart Claude Code to see the status line.
+Restart Claude Code to see the status line. **The whole setup — status line,
+hooks, and Telegram push/two-way — is reproducible on a new machine by running
+the installer in a terminal.**
 
 ### Options
 
@@ -147,10 +294,12 @@ If you'd rather not run a piped shell script:
 
 ```bash
 git clone https://github.com/ppanphper/claude-dotfiles.git ~/claude-dotfiles
-chmod +x ~/claude-dotfiles/statusline.sh ~/claude-dotfiles/hooks/worktree-tracker.sh
+chmod +x ~/claude-dotfiles/statusline.sh ~/claude-dotfiles/hooks/*.sh
 ln -s ~/claude-dotfiles/statusline.sh ~/.claude/statusline.sh
 mkdir -p ~/.claude/hooks
 ln -s ~/claude-dotfiles/hooks/worktree-tracker.sh ~/.claude/hooks/worktree-tracker.sh
+ln -s ~/claude-dotfiles/hooks/notify.sh ~/.claude/hooks/notify.sh
+cp -n ~/claude-dotfiles/notify.conf.example ~/.claude/notify.conf   # optional, for tweaks
 ```
 
 Then add to `~/.claude/settings.json` (merge with whatever's already there):
@@ -170,6 +319,15 @@ Then add to `~/.claude/settings.json` (merge with whatever's already there):
           { "type": "command", "command": "~/.claude/hooks/worktree-tracker.sh" }
         ]
       }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "~/.claude/hooks/notify.sh" } ] }
+    ],
+    "Notification": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "~/.claude/hooks/notify.sh" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "~/.claude/hooks/notify.sh" } ] }
     ]
   }
 }
@@ -187,11 +345,11 @@ next status-line refresh — no further action needed.
 ## Uninstall
 
 ```bash
-rm ~/.claude/statusline.sh ~/.claude/hooks/worktree-tracker.sh
-rm -f ~/.claude/.last_worktree_*
-# Then either remove the "statusLine" + matching "hooks" entries from
-# ~/.claude/settings.json, or restore from the settings.json.bak.<timestamp>
-# the installer created.
+rm ~/.claude/statusline.sh ~/.claude/hooks/worktree-tracker.sh ~/.claude/hooks/notify.sh
+rm -f ~/.claude/.last_worktree_* ~/.claude/.tg_topic_* ~/.claude/notify.conf
+# Then either remove the "statusLine" + matching "hooks" entries (PostToolUse,
+# Stop, Notification, UserPromptSubmit) from ~/.claude/settings.json, or restore
+# from the settings.json.bak.<timestamp> the installer created.
 rm -rf ~/claude-dotfiles
 ```
 
@@ -211,6 +369,13 @@ rm -rf ~/claude-dotfiles
   omitted and everything else keeps working. Since `npx` ships with Node.js
   (already on most machines), `install.sh` doesn't install a runtime by default
   — pass `INSTALL_BUN=1` to auto-install `bun` if no runner is found.
+- Desktop-notification / sound tools — _optional_, only for those notification
+  channels. macOS desktop popups use `terminal-notifier` (else the built-in
+  `osascript`); Linux uses `notify-send`. Sounds use `afplay` (macOS) or
+  `paplay`/`canberra-gtk-play` (Linux). Telegram push uses `curl` (ubiquitous).
+  Focus-aware mute uses `osascript` (macOS, needs Accessibility permission). Any
+  that's missing is silently skipped; the tab-title glyph and bell work
+  everywhere with no extra tools.
 - `perl` — _optional_, used to measure column display widths precisely (CJK and
   emoji count as two cells) when wrapping. Present by default on macOS and most
   Linux distributions. If it's missing, a pure-bash approximation is used that
