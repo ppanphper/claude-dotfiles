@@ -518,9 +518,15 @@ DESIRED_STATUSLINE='{"type":"command","command":"'"$CLAUDE_DIR"'/statusline.sh",
 HOOK_CMD="$CLAUDE_DIR/hooks/worktree-tracker.sh"
 NOTIFY_CMD="$CLAUDE_DIR/hooks/notify.sh"
 
+# Default Chinese spinner verbs (the word shown next to Claude Code's loading
+# spinner). Seeded only when the user hasn't set their own spinnerVerbs, so a
+# customized list is never clobbered on re-run. "replace" swaps the built-in
+# English verbs entirely; switch to "append" to keep them and add these.
+DESIRED_SPINNERVERBS='{"mode":"replace","verbs":["思考中","分析中","构思中","琢磨中","推敲中","酝酿中","盘算中","推理中","处理中","编码中","码字中","调试中","优化中","重构中","检索中","解析中","计算中","规划中","整理中","钻研中","验证中","组织中","打磨中","捣鼓中","施法中","召唤中","炼丹中","搬砖中","脑暴中","冲浪中","运筹中","加载中"]}'
+
 merge_settings() {
   # $1 = current settings.json content (or "{}" if none)
-  jq --argjson sl "$DESIRED_STATUSLINE" --arg hook "$HOOK_CMD" --arg notify "$NOTIFY_CMD" '
+  jq --argjson sl "$DESIRED_STATUSLINE" --argjson spin "$DESIRED_SPINNERVERBS" --arg hook "$HOOK_CMD" --arg notify "$NOTIFY_CMD" '
     # Ensure an event group (Stop/Notification) carries our command exactly once,
     # leaving any other hooks the user already has on that event intact.
     def ensure_event($key):
@@ -531,6 +537,7 @@ merge_settings() {
           end
       );
     .statusLine = $sl
+    | .spinnerVerbs //= $spin
     | .hooks.PostToolUse = (
         (.hooks.PostToolUse // []) as $arr
         | if ($arr | any(.matcher == "Bash")) then
