@@ -225,6 +225,11 @@ write_tg_conf() {
       $0==s {skip=1; next} skip && $0==e {skip=0; next} !skip {print}
     ' "$NOTIFY_CONF" > "$tmp"
   fi
+  # Seed THIS machine's label once, outside the managed block, so editing it to a
+  # friendly name survives re-runs (runtime falls back to `hostname -s` anyway).
+  if ! grep -q '^NOTIFY_TG_HOST_LABEL=' "$tmp" 2>/dev/null; then
+    printf 'NOTIFY_TG_HOST_LABEL="%s"\n' "$(hostname -s 2>/dev/null || hostname 2>/dev/null)" >> "$tmp"
+  fi
   {
     printf '%s\n' "$s"
     printf 'NOTIFY_TG_BOT_TOKEN="%s"\n' "$1"
