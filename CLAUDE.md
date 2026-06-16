@@ -167,6 +167,8 @@ shellcheck statusline.sh hooks/worktree-tracker.sh install.sh   # if installed
 `install.sh` must stay **idempotent** and **non-destructive**: re-running adds
 no duplicates, backs up any file it replaces (`*.bak.<timestamp>`), and writes
 `settings.json` atomically (`mktemp` + `mv`). The `settings.json` merge is a
-single `jq` program that sets `.statusLine` and appends the hook to the existing
-`Bash` matcher under `.hooks.PostToolUse` *without* dropping other fields or
-other Bash hooks the user already has. Preserve that property when editing the merge.
+single `jq` program that sets `.statusLine`, seeds `.spinnerVerbs` *only if
+absent* (`//=`, so a user's custom verbs are never clobbered), and appends the
+hook to the existing `Bash` matcher under `.hooks.PostToolUse` *without* dropping
+other fields or other Bash hooks the user already has. Preserve that property
+when editing the merge.

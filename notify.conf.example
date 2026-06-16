@@ -1,147 +1,141 @@
-# notify.conf — configuration for hooks/notify.sh
+# notify.conf — hooks/notify.sh 的配置文件
 #
-# Copy to ~/.claude/notify.conf and edit. It's sourced as a shell file, so use
-# KEY=value with no spaces around `=`. Every key is optional; anything you omit
-# keeps the default shown here. Lines starting with # are comments.
+# 复制到 ~/.claude/notify.conf 后再编辑。它以 shell 文件的方式被 source，所以
+# 写成 KEY=value，等号两侧不要留空格。每个键都是可选的；任何你省略的项都会
+# 沿用这里展示的默认值。以 # 开头的行是注释。
 #
-# The installer creates ~/.claude/notify.conf from this example only if one
-# doesn't already exist, so your edits are never overwritten on update.
+# 安装脚本只在 ~/.claude/notify.conf 不存在时才从本示例生成它，所以升级时
+# 你的修改永远不会被覆盖。
 
-# Master switch. 0 disables all notifications without touching settings.json.
+# 总开关。设为 0 可关闭全部通知，且不改动 settings.json。
 NOTIFY_ENABLED=1
 
-# ── Per-state channels (1=on, 0=off) ────────────────────────────────────────
-# A channel also auto-skips if its tool/config is missing, so turning one on is
-# safe even where it can't run.
+# ── 各状态对应的通道（1=开，0=关）────────────────────────────────────────────
+# 某个通道若所需的工具/配置缺失也会自动跳过，所以即便在跑不起来的环境里
+# 打开它也是安全的。
 #
-#   done = Claude finished a turn        (default: quiet)
-#   wait = Claude needs your input/perm  (default: loud — bell + desktop popup)
+#   done = Claude 完成一轮回复       （默认：安静）
+#   wait = Claude 需要你输入/授权     （默认：响亮 —— 响铃 + 桌面弹窗）
 #
-# TITLE = tab-title glyph (often overwritten by Claude Code — see below)
-# BELL = terminal bell   DESKTOP = OS popup   SOUND = play a sound
-# TG = Telegram push (see below).  iTerm2 tab COLOR is set separately, below.
+# TITLE = 标签页标题字形（常被 Claude Code 覆盖 —— 见下文）
+# BELL = 终端响铃   DESKTOP = 系统弹窗   SOUND = 播放声音
+# TG = Telegram 推送（见下文）。iTerm2 标签页 COLOR 在下面单独配置。
 
 NOTIFY_DONE_TITLE=0; NOTIFY_DONE_BELL=0; NOTIFY_DONE_DESKTOP=0; NOTIFY_DONE_SOUND=0; NOTIFY_DONE_TG=0
 NOTIFY_WAIT_TITLE=0; NOTIFY_WAIT_BELL=1; NOTIFY_WAIT_DESKTOP=1; NOTIFY_WAIT_SOUND=0; NOTIFY_WAIT_TG=1
 
-# ── iTerm2 tab color (the most reliable visual "done" indicator) ─────────────
-# "R G B" (0-255), empty = off. iTerm2 only. The hook writes OSC 6 to the
-# `claude` process's pty (a hook has no controlling terminal, so /dev/tty won't
-# work — it climbs the process tree to find the real pty). Unlike the title,
-# Claude Code never overwrites the tab color. NOTIFY_TABCOLOR_RESET clears it on
-# your next prompt (UserPromptSubmit), so a colored tab = unread output.
-NOTIFY_DONE_TABCOLOR="40 200 80"     # green
-NOTIFY_WAIT_TABCOLOR="230 180 40"    # amber
+# ── iTerm2 标签页颜色（最可靠的「完成」视觉指示）─────────────────────────────
+# 格式 "R G B"（0-255），留空 = 关闭。仅限 iTerm2。钩子会向 `claude` 进程的
+# pty 写入 OSC 6（钩子没有控制终端，所以 /dev/tty 用不了 —— 它会沿进程树往上
+# 找到真正的 pty）。和标题不同，Claude Code 从不覆盖标签页颜色。
+# NOTIFY_TABCOLOR_RESET 会在你下一次提交提示词时（UserPromptSubmit）清掉颜色，
+# 所以「带颜色的标签页 = 有未读输出」。
+NOTIFY_DONE_TABCOLOR="40 200 80"     # 绿色
+NOTIFY_WAIT_TABCOLOR="230 180 40"    # 琥珀色
 NOTIFY_TABCOLOR_RESET=1
-# A Notification means one of two things: a real permission/decision prompt
-# ("Claude needs your permission…") or the idle nudge ("Claude is waiting for
-# your input"). Only the first turns the tab amber and fires the loud/Telegram
-# channels; the idle case is reclassified as low-key "idle". By default idle does
-# NOT recolor the tab (it keeps the green "done"); set a "R G B" triple to tint it.
-NOTIFY_IDLE_TABCOLOR=""              # e.g. "90 110 140" for a dim slate idle tint
+# 一条 Notification 有两种含义：真正的权限/决策提示（「Claude 需要你的授权…」）
+# 或空闲提醒（「Claude 正在等待你的输入」）。只有前者会把标签页染成琥珀色并触发
+# 响亮通道/Telegram；空闲那种会被降级归类为低调的「idle」。默认情况下 idle
+# 不会改标签页颜色（保留绿色的「done」）；设一个 "R G B" 三元组可给它上色。
+NOTIFY_IDLE_TABCOLOR=""              # 例如 "90 110 140" 是一种暗石板色的 idle 着色
 
-# Animated "processing" progress bar on the tab while Claude is working — the
-# moving bar starts when you submit a prompt and stops when the turn ends (or
-# Claude needs you). Uses iTerm2's OSC 9;4 indeterminate progress, auto-detected
-# via TERM_FEATURES (iTerm2 3.6.x+); silently ignored on any other terminal.
+# Claude 工作时在标签页上显示的「处理中」动画进度条 —— 你提交提示词时进度条
+# 开始滚动，一轮结束（或 Claude 需要你介入）时停止。使用 iTerm2 的 OSC 9;4
+# 不确定型进度条，通过 TERM_FEATURES 自动探测（iTerm2 3.6.x+）；在其他终端上
+# 会被静默忽略。
 NOTIFY_PROGRESS=1
 
-# On iTerm2, the desktop channel uses iTerm2's native OSC 9 notification, which
-# you can CLICK to jump straight to that tab. iTerm2 decides visibility itself
-# (no popup when that tab is already focused), so this path ignores focus-mute.
-# Set to 0 to use terminal-notifier/osascript instead. Non-iTerm2 terminals
-# always use terminal-notifier/osascript (mac) or notify-send (linux).
+# 在 iTerm2 上，桌面通道使用 iTerm2 原生的 OSC 9 通知，点击它可直接跳到对应
+# 标签页。可见性由 iTerm2 自己决定（当前标签页已聚焦时不弹窗），所以这条路径
+# 会忽略「聚焦静音」。设为 0 则改用 terminal-notifier/osascript。非 iTerm2 的
+# 终端始终使用 terminal-notifier/osascript（mac）或 notify-send（linux）。
 NOTIFY_DESKTOP_OSC9=1
 
-# ── Tab-title glyphs (only when *_TITLE above is 1) ──────────────────────────
-# Claude Code manages the terminal title itself and will overwrite this on the
-# next render. To keep it, also set in ~/.claude/settings.json:
+# ── 标签页标题字形（仅当上面对应的 *_TITLE 为 1 时生效）──────────────────────
+# Claude Code 自己管理终端标题，并会在下一次渲染时覆盖掉这里设置的内容。
+# 想让它保留，还需在 ~/.claude/settings.json 中设置：
 #   "env": { "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1" }
-# Any string; emoji show as a colored dot. e.g. 🟢 🔵 🟡 🔴 ✅ ⏳ ●
+# 可填任意字符串；emoji 会显示为一个彩色圆点。例如 🟢 🔵 🟡 🔴 ✅ ⏳ ●
 NOTIFY_GLYPH_DONE="🟢"
 NOTIFY_GLYPH_WAIT="🟡"
 
-# State labels (shown in title / desktop / Telegram). Localize freely.
+# 状态文案（显示在标题 / 桌面 / Telegram 中）。可自行本地化。
 NOTIFY_LABEL_DONE="Claude done"
 NOTIFY_LABEL_WAIT="Claude waiting"
 
-# ── Sound files (only when the matching *_SOUND above is 1) ──────────────────
-# Empty → a platform default. macOS: any /System/Library/Sounds/*.aiff
-# (Glass, Funk, Hero, Ping, Submarine, Pop…). Linux: a path paplay can play.
-# Tip: pick two distinct sounds for done vs wait and your ear learns them fast.
+# ── 提示音文件（仅当对应的 *_SOUND 为 1 时生效）──────────────────────────────
+# 留空 → 使用平台默认音。macOS：任意 /System/Library/Sounds/*.aiff
+#（Glass、Funk、Hero、Ping、Submarine、Pop…）。Linux：paplay 能播放的路径。
+# 小技巧：给 done 和 wait 各选一个明显不同的声音，耳朵很快就能分辨。
 NOTIFY_SOUND_DONE=""
 NOTIFY_SOUND_WAIT=""
 
-# ── Message content ──────────────────────────────────────────────────────────
-# Include the git branch + a one-line summary (last assistant message / the
-# notification text) in desktop popups and Telegram messages.
+# ── 消息内容 ─────────────────────────────────────────────────────────────────
+# 在桌面弹窗和 Telegram 消息里附带 git 分支 + 一行摘要（最后一条助手消息 /
+# 通知文本）。
 NOTIFY_SUMMARY=1
-NOTIFY_SUMMARY_MAX=200      # desktop/title summary: truncate to this many chars
+NOTIFY_SUMMARY_MAX=200      # 桌面/标题摘要：截断到这么多字符
 
-# Telegram messages are sent as HTML (parse_mode=HTML): the assistant's
-# **bold** / `code` / # headings / - bullets render properly instead of showing
-# raw markdown, and tables collapse to "a · b" rows. Telegram holds more than a
-# desktop popup, so it gets its own (larger) length budget.
+# Telegram 消息以 HTML 形式发送（parse_mode=HTML）：助手的 **加粗** / `代码` /
+# # 标题 / - 列表会被正确渲染，而不是显示原始 markdown，表格则会折叠成「a · b」
+# 这样的行。Telegram 能容纳的内容比桌面弹窗多，所以给它单独（更大）的长度预算。
 NOTIFY_TG_SUMMARY_MAX=600
 
-# Render the FULL reply to an IMAGE and send that instead of the text message —
-# no truncation, web-quality layout (syntax-highlighted code, tables, headings).
-# Needs python3 + headless Chrome (hooks/render-reply.py); if either is missing,
-# it silently falls back to the HTML text message above. Long replies that
-# exceed Telegram's photo limits are sent as a file/PDF (sendDocument) so nothing
-# is cut off. NOTIFY_TG_IMAGE_WIDTH is the render width in px (before 2x scaling).
+# 把完整回复渲染成一张图片再发送，替代纯文本消息 —— 不截断、网页级排版
+#（语法高亮的代码、表格、标题）。需要 python3 + 无头 Chrome（hooks/render-reply.py）；
+# 若两者任一缺失，会静默回退到上面的 HTML 文本消息。超出 Telegram 图片限制的
+# 超长回复会以文件/PDF 形式发送（sendDocument），确保内容不被裁剪。
+# NOTIFY_TG_IMAGE_WIDTH 是渲染宽度（像素，2 倍缩放前）。
 NOTIFY_TG_IMAGE=0
 NOTIFY_TG_IMAGE_WIDTH=760
 
-# ── Focus-aware mute (macOS only) ────────────────────────────────────────────
-# When a terminal is the frontmost app — i.e. you're already watching — suppress
-# the LOCAL loud channels (bell/desktop/sound). The silent tab glyph and remote
-# Telegram push still fire (you might have walked away with the terminal up).
-# Needs Accessibility permission for your terminal app: System Settings >
-# Privacy & Security > Accessibility. If denied, it fails open (you still get
-# notified). NOTIFY_TERMINAL_APPS is the space-separated frontmost-app names
-# that count as "a terminal" — add yours if it's missing.
+# ── 聚焦感知静音（仅限 macOS）────────────────────────────────────────────────
+# 当某个终端是最前台应用时 —— 也就是你正盯着它看 —— 抑制本地的响亮通道
+#（响铃/桌面/声音）。静默的标签页字形和远程 Telegram 推送仍会触发（你可能开着
+# 终端就走开了）。需要给你的终端 App 授予「辅助功能」权限：系统设置 >
+# 隐私与安全性 > 辅助功能。若被拒绝，会「失败即放行」（你照样收得到通知）。
+# NOTIFY_TERMINAL_APPS 是算作「终端」的最前台应用名（空格分隔）—— 你的终端
+# 不在列表里就加上。
 NOTIFY_FOCUS_MUTE=1
 NOTIFY_TERMINAL_APPS="Terminal iTerm2 Ghostty kitty WezTerm Alacritty Warp Code Hyper Tabby rio"
 
-# ── Telegram push (remote — get notified away from your desk) ────────────────
-# 1. Create a bot with @BotFather → copy the token into NOTIFY_TG_BOT_TOKEN.
-# 2. Get your chat id: message the bot, then open
-#    https://api.telegram.org/bot<TOKEN>/getUpdates and read result[].message.chat.id
-#    (a personal chat id, or a group/supergroup id starting with -100…).
-# Leave the token empty to disable. Controlled per state via *_TG above.
+# ── Telegram 推送（远程 —— 离开座位也能收到通知）────────────────────────────
+# 1. 用 @BotFather 创建一个机器人 → 把 token 填进 NOTIFY_TG_BOT_TOKEN。
+# 2. 获取你的 chat id：给机器人发条消息，然后打开
+#    https://api.telegram.org/bot<TOKEN>/getUpdates 读取 result[].message.chat.id
+#   （个人聊天的 chat id，或以 -100… 开头的群/超级群 id）。
+# 把 token 留空即可禁用。通过上面的 *_TG 按状态分别控制。
 NOTIFY_TG_BOT_TOKEN=""
 NOTIFY_TG_CHAT_ID=""
 
-# One forum topic per Claude session (so each session is its own thread). The
-# chat must be a forum supergroup (Group → Edit → Topics on) and the bot an
-# admin with "Manage Topics". Its id is cached in ~/.claude/.tg_topic_<session_id>
-# as one JSON line {"thread":"…","title":"…"} so later messages reuse it.
-# Off → plain messages to the group, prefixed with project.
+# 每个 Claude 会话一个论坛话题（topic），让每个会话各成一条独立线程。该聊天
+# 必须是论坛超级群（群 → 编辑 → 打开「话题」），且机器人是拥有「管理话题」
+# 权限的管理员。其 id 会以一行 JSON {"thread":"…","title":"…"} 缓存在
+# ~/.claude/.tg_topic_<session_id> 中，供后续消息复用。
+# 关闭 → 直接给群发普通消息，并以项目名作前缀。
 NOTIFY_TG_FORUM=0
 
-# Name each session's topic after the session's title — Claude's `ai-title`, which
-# appears a few turns in; falls back to the first prompt, then "project ⎇ branch".
-# The topic is renamed if/when that title changes. 0 = static "project ⎇ branch ·
-# <short session id>" naming. Renaming needs the bot's "Manage Topics" admin right.
+# 用会话标题来命名每个会话的话题 —— 即 Claude 的 `ai-title`，它会在几轮之后才
+# 出现；回退顺序为首条提示词，再到「project ⎇ branch」。当该标题变化时话题会被
+# 重命名。0 = 使用静态命名「project ⎇ branch · <短会话 id>」。重命名需要机器人的
+# 「管理话题」管理员权限。
 NOTIFY_TG_TOPIC_TITLE=1
-# On topic creation, post a context line (project / branch / cwd / session id) and
-# pin it at the top of the topic, so the title can stay just the session name.
-# Needs the bot's "Pin Messages" admin right. 0 = no pinned context message.
+# 创建话题时，发一条上下文信息（项目 / 分支 / cwd / 会话 id）并把它置顶到话题
+# 顶部，这样标题就能只保留会话名。需要机器人的「置顶消息」管理员权限。
+# 0 = 不发置顶上下文消息。
 NOTIFY_TG_TOPIC_PIN=1
 
-# When the session ends (SessionEnd hook), what to do with its forum topic:
-#   close  = archive it — keeps history, folds it into the group's "closed" list
-#   delete = remove the topic and all its messages (irreversible)
-#   cache  = only delete the local ~/.claude/.tg_topic_<id> file, leave the topic
-#   off    = do nothing
-# Either way the per-session cache file is removed (except "off"). Closing/deleting
-# needs the bot to be a group admin with "Manage Topics".
+# 会话结束时（SessionEnd 钩子），如何处理它的论坛话题：
+#   close  = 归档它 —— 保留历史，折叠进群组的「已关闭」列表
+#   delete = 删除话题及其全部消息（不可逆）
+#   cache  = 只删本地的 ~/.claude/.tg_topic_<id> 文件，保留话题本身
+#   off    = 什么都不做
+# 除 "off" 外，无论哪种都会删掉每个会话的缓存文件。关闭/删除话题需要机器人是
+# 拥有「管理话题」权限的群管理员。
 NOTIFY_TG_TOPIC_CLEANUP=close
 
-# Want to also REPLY in Telegram to drive the session (issue new tasks)? A hook
-# can't inject prompts into a running session — that's Claude Code's official
-# bidirectional "Channels" feature, not this hook. The installer adds a `claude-tg`
-# function for it (the plugin stays globally disabled so normal sessions skip its
-# ~2s getUpdates drain at exit; claude-tg enables it per-session). See the README
-# "Two-way control" note.
+# 想在 Telegram 里也能回复来驱动会话（下达新任务）？钩子无法把提示词注入到正在
+# 运行的会话里 —— 那是 Claude Code 官方的双向「Channels」特性，不是这个钩子做的。
+# 安装脚本会为此添加一个 `claude-tg` 函数（插件保持全局禁用，好让普通会话跳过它
+# 在退出时约 2 秒的 getUpdates 拉取；claude-tg 会按会话临时启用它）。详见 README
+# 的「Two-way control」一节。
