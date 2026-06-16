@@ -7,7 +7,8 @@
 #
 # UserPromptSubmit also starts an iTerm2 OSC 9;4 "indeterminate" progress bar (an
 # animated bar on the tab) that signals "processing"; Stop/Notification clear it.
-# SessionEnd closes/deletes this session's Telegram forum topic (NOTIFY_TG_TOPIC_CLEANUP).
+# SessionEnd clears any leftover tab color/progress bar, then closes/deletes this
+# session's Telegram forum topic (NOTIFY_TG_TOPIC_CLEANUP).
 #
 # Channels (per-state, each auto-skipped when its tool/config/terminal is
 # missing; the script always exits 0):
@@ -220,11 +221,18 @@ if [ "$state" = "reset" ]; then
   exit 0
 fi
 
-# --- end: session is over → clean up this session's forum topic ---------------
-# Mapped from SessionEnd. "close" archives the topic (keeps history), "delete"
+# --- end: session is over → clear leftover tab decor + clean up forum topic ---
+# Mapped from SessionEnd. First clear any leftover tab color / progress bar so a
+# green "done" or amber "wait" tab doesn't linger on the (possibly reused or
+# still-open) terminal tab after Claude exits — same clear as the reset event.
+# Then handle the Telegram topic: "close" archives it (keeps history), "delete"
 # removes it entirely, "cache" only drops the local cache file. The API call is
 # backgrounded so exiting Claude Code never blocks on the network.
 if [ "$state" = "end" ]; then
+  [ "$NOTIFY_TABCOLOR_RESET" = "1" ] && [ "$IS_ITERM" = "1" ] && \
+    tw "${ESC}]6;1;bg;*;default${BEL}"
+  prog 0
+
   [ "$NOTIFY_TG_TOPIC_CLEANUP" = "off" ] && exit 0
   tf="$HOME/.claude/.tg_topic_${session_id}"
   if [ "$NOTIFY_TG_FORUM" = "1" ] && [ -n "$session_id" ] && [ -f "$tf" ]; then
