@@ -5,6 +5,10 @@
 #
 # Or with a custom install dir:
 #   CLAUDE_DOTFILES_DIR=~/dev/claude-dotfiles curl -fsSL ... | bash
+#
+# Env knobs: CLAUDE_DOTFILES_DIR (install location), BACKUP_KEEP (how many
+# "<file>.bak.<epoch>" backups to retain per file, default 3; 0 keeps none),
+# SKIP_TELEGRAM_SETUP=1, INSTALL_BUN=1, SKIP_JQ_INSTALL=1.
 
 set -e
 
@@ -420,6 +424,121 @@ setup_telegram() {
   esac
 }
 
+# Migrate ~/.claude/notify.conf onto the latest template (notify.conf.example) so a
+# new release's added keys + comments show up, WITHOUT clobbering the user's edits.
+# This is a 3-way merge against a baseline snapshot (~/.claude/.notify.conf.base =
+# the template defaults the conf was last reconciled with): a value that differs
+# from the OLD default was changed by the USER (carry it), one that equals it is a
+# stale default (adopt the NEW default instead). New keys the user never had simply
+# inherit the new template's default. The Telegram "managed" block is carried
+# verbatim. Idempotent + atomic; backs up before replacing.
+sync_notify_conf() {
+  local example="$NOTIFY_CONF_EXAMPLE" user="$NOTIFY_CONF" base="$NOTIFY_BASE"
+  [ -f "$example" ] || { warn "notify.conf.example missing — skipping notify.conf sync"; return 0; }
+
+  # Baseline for "old defaults": the saved snapshot if present, else the new
+  # template (first run after this feature ships — for that one run we can't tell a
+  # user-set value from a since-changed default; every later run is exact).
+  local base_src="$example"
+  [ -f "$base" ] && base_src="$base"
+
+  local s="# >>> claude-dotfiles telegram (managed) >>>"
+  local e="# <<< claude-dotfiles telegram (managed) <<<"
+
+  # The Telegram managed block (token/chat/…) — carried verbatim — and the keys it
+  # assigns (excluded from the overrides below so they aren't duplicated).
+  local managed_block managed_keys
+  managed_block=$(awk -v s="$s" -v e="$e" '$0==s{f=1} f{print} $0==e{f=0}' "$user")
+  managed_keys=$(printf '%s\n' "$managed_block" | grep -oE '^NOTIFY_[A-Z_]+=' | sed 's/=$//' | sort -u) || true
+
+  # Keys the user EXPLICITLY assigned, outside the managed block, ignoring
+  # comment-only lines. No line anchor → the example's compound "A=0; B=0; …" lines
+  # are caught too. An inline trailing "# note" sits after the value, so it's safe.
+  local user_keys
+  user_keys=$(awk -v s="$s" -v e="$e" '$0==s{f=1} !f && $0!~/^[[:space:]]*#/{print} $0==e{f=0}' "$user" \
+              | grep -oE 'NOTIFY_[A-Z_]+=' | sed 's/=$//' | sort -u) || true
+
+  # Dump KEY<TAB>VALUE by sourcing a conf in a clean subshell (robust to
+  # quotes/CJK/compound lines). Reads only the keys named in $2.
+  _dump() {
+    ( set +e; set +u; . "$1" >/dev/null 2>&1
+      for k in $2; do printf '%s\t%s\n' "$k" "${!k-}"; done )
+  }
+  _val() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{v=$2} END{print v}'; }
+  # Double-quote a value the way the template does (keeps UTF-8 emoji/CJK readable,
+  # unlike printf %q which byte-escapes them on bash 3.2). Escape \ " $ `.
+  _q() {
+    local v=$1
+    v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//\$/\\\$}; v=${v//\`/\\\`}
+    printf '"%s"' "$v"
+  }
+
+  local new_vals old_vals user_vals
+  new_vals=$(_dump "$example"  "$user_keys")
+  old_vals=$(_dump "$base_src" "$user_keys")
+  user_vals=$(_dump "$user"    "$user_keys")
+
+  # Carry a key only if the user's value differs from the OLD template default.
+  local overrides="" k old uval line
+  for k in $user_keys; do
+    printf '%s\n' "$managed_keys" | grep -qxF "$k" && continue   # in managed block → skip
+    old=$(_val "$old_vals" "$k")
+    uval=$(_val "$user_vals" "$k")
+    [ "$uval" = "$old" ] && continue                              # untouched → take new default
+    line="$k=$(_q "$uval")"
+    overrides+="$line"$'\n'
+  done
+
+  # Assemble: new template (verbatim) + migrated overrides (win over the defaults
+  # above) + the Telegram managed block last (wins over everything, as before).
+  local tmp; tmp=$(mktemp)
+  cat "$example" > "$tmp"
+  if [ -n "$overrides" ]; then
+    {
+      printf '\n# >>> claude-dotfiles migrated overrides >>>\n'
+      printf '# 升级时从你旧的 notify.conf 迁移过来的改动（位于模板默认值之后，故会覆盖它们）。\n'
+      printf '# 可直接在此编辑；下次升级会继续保留你的改动。\n'
+      printf '%s' "$overrides"
+      printf '# <<< claude-dotfiles migrated overrides <<<\n'
+    } >> "$tmp"
+  fi
+  [ -n "$managed_block" ] && printf '\n%s\n' "$managed_block" >> "$tmp"
+
+  if cmp -s "$tmp" "$user"; then
+    rm -f "$tmp"
+    cp "$example" "$base" 2>/dev/null || true
+    ok "notify.conf already up to date with the latest template"
+    return 0
+  fi
+  local bak="${user}.bak.$(date +%s)"
+  cp "$user" "$bak"
+  mv "$tmp" "$user"
+  cp "$example" "$base" 2>/dev/null || true
+  warn "notify.conf backed up → $bak"
+  ok "notify.conf migrated onto the latest template (your settings carried over)"
+}
+
+# Backup retention. Every upgrade can leave a "<file>.bak.<epoch>" behind (symlink
+# swaps, settings.json merge, notify.conf migration); without pruning they pile up
+# forever. Keep the newest $BACKUP_KEEP per base file (default 3), delete the rest.
+# The .bak.<epoch> suffix is fixed-width seconds, so a glob already lists them
+# oldest→newest. BACKUP_KEEP=0 keeps none. Best-effort: never fails the install.
+prune_backups() {
+  local base="$1" keep="${BACKUP_KEEP:-3}"
+  case "$keep" in ''|*[!0-9]*) keep=3 ;; esac
+  shopt -s nullglob
+  local matches=( "$base".bak.* )
+  shopt -u nullglob
+  local total=${#matches[@]}
+  [ "$total" -gt "$keep" ] || return 0
+  local remove=$(( total - keep )) i=0
+  while [ "$i" -lt "$remove" ]; do
+    rm -f "${matches[$i]}" 2>/dev/null || true
+    i=$(( i + 1 ))
+  done
+  info "pruned $remove old backup(s) of $(basename "$base") (kept newest $keep)"
+}
+
 install_jq
 
 mkdir -p "$CLAUDE_DIR"
@@ -508,13 +627,18 @@ if [ -f "$RENDER_TARGET" ]; then
   fi
 fi
 
-# --- seed ~/.claude/notify.conf from the example (never overwrite user edits) ---
+# --- seed / migrate ~/.claude/notify.conf from the example --------------------
+# Fresh install: copy the template. Upgrade: 3-way-merge the latest template onto
+# the user's conf (new keys/comments appear; their edits are carried over) — see
+# sync_notify_conf. .notify.conf.base snapshots the template we last merged with.
 NOTIFY_CONF_EXAMPLE="$INSTALL_DIR/notify.conf.example"
 NOTIFY_CONF="$CLAUDE_DIR/notify.conf"
+NOTIFY_BASE="$CLAUDE_DIR/.notify.conf.base"
 if [ -f "$NOTIFY_CONF" ]; then
-  ok "notify.conf already present (left untouched): $NOTIFY_CONF"
+  sync_notify_conf
 elif [ -f "$NOTIFY_CONF_EXAMPLE" ]; then
   cp "$NOTIFY_CONF_EXAMPLE" "$NOTIFY_CONF"
+  cp "$NOTIFY_CONF_EXAMPLE" "$NOTIFY_BASE"
   ok "notify.conf created from example: $NOTIFY_CONF"
 fi
 
@@ -592,6 +716,13 @@ ensure_ccusage_runner
 
 # --- optional guided Telegram setup (interactive terminals only) ---
 setup_telegram
+
+# --- prune old backups so they don't accumulate across upgrades ---------------
+# Runs last so this upgrade's fresh backups are the ones kept. Covers every file
+# the installer may back up. Tune with BACKUP_KEEP (default 3; 0 keeps none).
+for _b in "$LINK" "$HOOK_LINK" "$NOTIFY_LINK" "$RENDER_LINK" "$SETTINGS" "$NOTIFY_CONF"; do
+  [ -n "$_b" ] && prune_backups "$_b"
+done
 
 echo
 ok "Done. Restart Claude Code to see the status line."

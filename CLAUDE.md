@@ -172,3 +172,25 @@ absent* (`//=`, so a user's custom verbs are never clobbered), and appends the
 hook to the existing `Bash` matcher under `.hooks.PostToolUse` *without* dropping
 other fields or other Bash hooks the user already has. Preserve that property
 when editing the merge.
+
+`notify.conf` is **3-way-merged** on every upgrade, not just seeded once
+(`sync_notify_conf`). On a fresh install the example is copied; on re-run the
+latest `notify.conf.example` is laid down verbatim (so new keys + comments
+appear), then the user's customizations are migrated into a trailing
+`# >>> … migrated overrides >>>` block. The merge is 3-way against a baseline
+snapshot, `~/.claude/.notify.conf.base` (= the template the conf was last
+reconciled with): a value differing from the *old* default was user-set (carry
+it); one equal to it is a stale default (adopt the *new* default). New keys the
+user never had inherit the new default. The Telegram **managed block** is carried
+verbatim and stays last (highest precedence). Migrated values are written
+double-quoted (not `printf %q`, which byte-escapes emoji/CJK on bash 3.2). The
+result is compared to the existing conf and only rewritten when it differs, so
+re-runs don't churn backups. **First run after this shipped** has no baseline, so
+it falls back to "carry anything ≠ new default" for that one run, then writes the
+snapshot; every later run is exact.
+
+Backups are **retained, not infinite**: `prune_backups` keeps the newest
+`BACKUP_KEEP` (default 3; `0` keeps none) `<file>.bak.<epoch>` per base file and
+deletes the rest. It runs last (after Telegram setup) so the current upgrade's
+backups are the ones kept, relies on the fixed-width epoch suffix making a glob
+already chronological, and is best-effort (never fails the install).
