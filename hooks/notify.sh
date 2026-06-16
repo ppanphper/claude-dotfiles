@@ -47,6 +47,17 @@ case "$event" in
   *) exit 0 ;;
 esac
 
+# A Notification fires for two very different things: a real permission/decision
+# prompt ("Claude needs your permission…") AND the idle nudge ("Claude is waiting
+# for your input"). Only the former deserves the amber tab + loud channels;
+# reclassify the idle case as a low-key "idle" state. Default-to-"wait" is the
+# safe side (an unrecognized notification still gets your attention).
+if [ "$event" = "Notification" ]; then
+  case "$(j '.message')" in
+    *"waiting for your input"*) state="idle" ;;
+  esac
+fi
+
 # Find the terminal device by climbing the process tree to the first ancestor
 # that owns a tty (this hook's own process has none). macOS: ttysNNN; Linux:
 # pts/N. Echoes e.g. /dev/ttys003, or nothing.
@@ -99,6 +110,29 @@ md2tg_html() {
     -e 's/[[:space:]]*[|][[:space:]]*/ · /g'
 }
 
+# The Telegram forum topic for a session is named after the session's title.
+# Claude writes an `ai-title` line into the transcript once it has one (a few
+# turns in); fall back to the first prompt, then to "project ⎇ branch". Collapsed
+# to one line and capped under Telegram's 128-char topic-name limit. Reads
+# $transcript/$label, which are set before the Telegram block runs.
+tg_topic_title() {
+  local t=""
+  if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+    t=$(grep '"type":"ai-title"' "$transcript" 2>/dev/null | tail -n1 \
+          | jq -r '.aiTitle // empty' 2>/dev/null)
+    [ -n "$t" ] || t=$(grep '"type":"last-prompt"' "$transcript" 2>/dev/null | tail -n1 \
+          | jq -r '.lastPrompt // empty' 2>/dev/null)
+  fi
+  [ -n "$t" ] || t="$label"
+  t=$(printf '%s' "$t" | tr '\n\r\t' '   ' | sed -E 's/  +/ /g; s/^ //; s/ $//')
+  [ "${#t}" -gt 96 ] && t="${t:0:96}…"
+  printf '%s' "$t"
+}
+
+# Per-session forum-topic cache is one JSON line: {"thread":"75","title":"…"}.
+# Reading by field (jq) beats line positions — a title can hold anything.
+tg_cache_write() { jq -nc --arg thread "$1" --arg title "$2" '{thread:$thread,title:$title}' > "$3"; }
+
 # --- defaults (override in ~/.claude/notify.conf) ----------------------------
 NOTIFY_ENABLED=1
 
@@ -113,6 +147,11 @@ NOTIFY_GLYPH_WAIT="🟡"
 NOTIFY_DONE_TABCOLOR=""
 NOTIFY_WAIT_TABCOLOR=""
 NOTIFY_TABCOLOR_RESET=1
+# Idle = "Claude is waiting for your input" (the turn finished, your move) — NOT a
+# permission decision. Kept deliberately low-key: no bell/desktop/sound/Telegram,
+# and by default the tab keeps whatever color it had (e.g. green "done") instead
+# of turning amber. Set a "R G B" triple here if you do want a subtle idle tint.
+NOTIFY_IDLE_TABCOLOR=""
 
 # Animated "processing" progress bar on the tab (iTerm2 OSC 9;4 indeterminate).
 # Starts when you submit a prompt, stops when the turn ends or Claude needs you.
@@ -143,6 +182,14 @@ NOTIFY_TERMINAL_APPS="Terminal iTerm2 Ghostty kitty WezTerm Alacritty Warp Code 
 NOTIFY_TG_BOT_TOKEN=""
 NOTIFY_TG_CHAT_ID=""
 NOTIFY_TG_FORUM=0
+# Name each session's forum topic after its title (Claude's `ai-title`), renaming
+# the topic if/when that title changes. 0 = the old "project ⎇ branch · <session>"
+# naming. Needs the bot to be a group admin with "Manage Topics".
+NOTIFY_TG_TOPIC_TITLE=1
+# On topic creation, post a context line (project / branch / cwd / session id) and
+# pin it at the top of the topic — so the title can stay just the session name.
+# Needs the bot's "Pin Messages" admin right.
+NOTIFY_TG_TOPIC_PIN=1
 # What to do with a session's forum topic when the session ends (SessionEnd):
 #   close  = archive it (keeps history, folds into the "closed" list) [default]
 #   delete = remove the topic and all its messages (irreversible)
@@ -177,7 +224,7 @@ if [ "$state" = "end" ]; then
   [ "$NOTIFY_TG_TOPIC_CLEANUP" = "off" ] && exit 0
   tf="$HOME/.claude/.tg_topic_${session_id}"
   if [ "$NOTIFY_TG_FORUM" = "1" ] && [ -n "$session_id" ] && [ -f "$tf" ]; then
-    thread=$(head -n1 "$tf" 2>/dev/null)
+    thread=$(jq -r '.thread // empty' "$tf" 2>/dev/null)
     if [ -n "$thread" ] && [ "$NOTIFY_TG_TOPIC_CLEANUP" != "cache" ] \
        && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_ID" ] \
        && command -v curl >/dev/null 2>&1; then
@@ -187,6 +234,20 @@ if [ "$state" = "end" ]; then
           --data-urlencode "message_thread_id=${thread}" >/dev/null 2>&1 ) >/dev/null 2>&1 &
     fi
     rm -f "$tf" 2>/dev/null
+  fi
+  exit 0
+fi
+
+# --- idle: turn finished, Claude is waiting for your input -------------------
+# Low-key by design: stop the progress bar and (optionally) tint the tab, but no
+# bell/desktop/sound/Telegram and no amber — those are reserved for real
+# permission decisions. Empty NOTIFY_IDLE_TABCOLOR leaves the tab color as-is.
+if [ "$state" = "idle" ]; then
+  prog 0
+  if [ -n "$NOTIFY_IDLE_TABCOLOR" ] && [ "$IS_ITERM" = "1" ] && [ "$tty_ok" = "1" ]; then
+    # shellcheck disable=SC2086
+    set -- $NOTIFY_IDLE_TABCOLOR; r="${1:-0}"; g="${2:-0}"; b="${3:-0}"
+    tw "${ESC}]6;1;bg;red;brightness;${r}${BEL}${ESC}]6;1;bg;green;brightness;${g}${BEL}${ESC}]6;1;bg;blue;brightness;${b}${BEL}"
   fi
   exit 0
 fi
@@ -323,17 +384,55 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
     thread=""
     if [ "$NOTIFY_TG_FORUM" = "1" ] && [ -n "$session_id" ]; then
       tf="$HOME/.claude/.tg_topic_${session_id}"
-      if [ -f "$tf" ]; then
-        thread=$(head -n1 "$tf" 2>/dev/null)
+      # Desired title: session ai-title (NOTIFY_TG_TOPIC_TITLE=1), else the old
+      # "project ⎇ branch · <short session>" form. Cache holds thread_id on line 1
+      # and the title last applied on line 2 (so we can detect a title change).
+      if [ "$NOTIFY_TG_TOPIC_TITLE" = "1" ]; then
+        topic_name=$(tg_topic_title)
       else
-        # Topic title = "project ⎇ branch · <short session>". The short session
-        # suffix keeps two sessions of the same project/branch as distinct topics.
         topic_name="$label · ${session_id:0:6}"
+      fi
+      if [ -f "$tf" ]; then
+        thread=$(jq -r '.thread // empty' "$tf" 2>/dev/null)
+        # Rename if the session's title has changed since the topic was created
+        # (ai-title typically appears a few turns in, after first creation).
+        if [ "$NOTIFY_TG_TOPIC_TITLE" = "1" ] && [ -n "$thread" ] && [ -n "$topic_name" ]; then
+          had_title=$(jq -r '.title // empty' "$tf" 2>/dev/null)
+          if [ "$topic_name" != "$had_title" ]; then
+            curl -fsS -m 10 "${api}/editForumTopic" \
+              --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
+              --data-urlencode "message_thread_id=${thread}" \
+              --data-urlencode "name=${topic_name}" >/dev/null 2>&1 \
+              && tg_cache_write "$thread" "$topic_name" "$tf"
+          fi
+        fi
+      else
         thread=$(curl -fsS -m 10 "${api}/createForumTopic" \
                    --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
                    --data-urlencode "name=${topic_name}" 2>/dev/null \
                  | jq -r '.result.message_thread_id // empty' 2>/dev/null)
-        [ -n "$thread" ] && printf '%s\n' "$thread" > "$tf"
+        if [ -n "$thread" ]; then
+          tg_cache_write "$thread" "$topic_name" "$tf"
+          # Post the project/branch/cwd/session context once and pin it at the top
+          # of the topic, so the topic title can stay just the session name.
+          if [ "$NOTIFY_TG_TOPIC_PIN" = "1" ]; then
+            pin_html="<b>📂 $(printf '%s' "$project" | esc)</b>"
+            [ -n "$branch" ] && pin_html="${pin_html} ⎇ <code>$(printf '%s' "$branch" | esc)</code>"
+            pin_html="${pin_html}"$'\n'"<code>$(printf '%s' "$cwd" | esc)</code>"
+            pin_html="${pin_html}"$'\n'"session <code>${session_id}</code>"
+            mid=$(curl -fsS -m 10 "${api}/sendMessage" \
+                    --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
+                    --data-urlencode "message_thread_id=${thread}" \
+                    --data-urlencode "parse_mode=HTML" \
+                    --data-urlencode "text=${pin_html}" \
+                    --data-urlencode "disable_notification=true" 2>/dev/null \
+                  | jq -r '.result.message_id // empty' 2>/dev/null)
+            [ -n "$mid" ] && curl -fsS -m 10 "${api}/pinChatMessage" \
+              --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
+              --data-urlencode "message_id=${mid}" \
+              --data-urlencode "disable_notification=true" >/dev/null 2>&1
+          fi
+        fi
       fi
     fi
 

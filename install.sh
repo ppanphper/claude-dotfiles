@@ -139,29 +139,76 @@ try_install_bun() {
   return 1
 }
 
-# Append a line to a shell rc file exactly once (idempotent). $1 = rc path, $2 = line.
-append_line_once() {
-  [ -f "$1" ] || : > "$1"
-  grep -qF "$2" "$1" 2>/dev/null && return 0
-  printf '\n%s\n' "$2" >> "$1"
+# Keep the telegram plugin installed (cached) but globally DISABLED in
+# settings.json. A globally-enabled plugin spawns its bun getUpdates poller in
+# EVERY claude session, and Claude Code then blocks ~2s at session end while that
+# poller drains (telegram server.ts caps it at 2s). Push notifications go through
+# notify.sh (plain curl) and don't need the plugin, so the only thing that needs it
+# is two-way — which claude-tg re-enables per-session via --settings. Net: normal
+# sessions exit instantly; two-way still works on demand. Idempotent + atomic.
+disable_telegram_plugin_globally() {
+  local key="telegram@claude-plugins-official"
+  command -v jq >/dev/null 2>&1 || {
+    warn "jq missing — can't disable telegram plugin; set enabledPlugins[\"$key\"]=false yourself to avoid a ~2s session-end delay."
+    return 0
+  }
+  [ -f "$SETTINGS" ] && jq empty "$SETTINGS" 2>/dev/null || {
+    warn "$SETTINGS missing/invalid — skipping telegram global-disable."
+    return 0
+  }
+  if [ "$(jq -r --arg k "$key" '.enabledPlugins[$k] // empty' "$SETTINGS")" = "false" ]; then
+    ok "telegram plugin already globally disabled (on-demand via claude-tg)"
+    return 0
+  fi
+  local tmp; tmp=$(mktemp)
+  if jq --arg k "$key" '.enabledPlugins[$k] = false' "$SETTINGS" > "$tmp" && [ -s "$tmp" ]; then
+    cp "$SETTINGS" "${SETTINGS}.bak.$(date +%s)"
+    mv "$tmp" "$SETTINGS"
+    ok "telegram plugin globally disabled — claude-tg enables it per-session (skips ~2s exit delay)"
+  else
+    rm -f "$tmp"
+    warn "couldn't update $SETTINGS — disable the telegram plugin manually."
+  fi
 }
 
-# Offer to add the `claude-tg` alias to the user's shell rc so two-way sessions
-# are one word instead of the long --channels flag.
+# Add a `claude-tg` shell FUNCTION to the user's rc: open an interactive session
+# with the Telegram two-way channel. Called only after the user opts into two-way,
+# so we write it automatically (idempotently). The telegram plugin is kept
+# globally DISABLED (see disable_telegram_plugin_globally) so normal sessions don't
+# pay its ~2s getUpdates-drain at exit; the function re-enables it for THIS session
+# only via --settings and wires two-way via --channels. It invokes plain `claude`
+# (not `command claude`) so a user's proxy-wrapper `claude` function still applies.
 add_claude_tg_alias() {
-  local line="alias claude-tg='claude --channels plugin:telegram@claude-plugins-official'"
   local rc=""
   case "${SHELL##*/}" in
     zsh)  rc="$HOME/.zshrc" ;;
     bash) rc="$HOME/.bashrc" ;;
     *)    rc="${ENV:-$HOME/.profile}" ;;
   esac
-  printf "      Add 'claude-tg' alias to %s? [y/N] " "$rc"
-  local a; read -r a || return 0
-  case "$a" in
-    [yY]*) append_line_once "$rc" "$line" && ok "alias added to $rc (run: source $rc)" ;;
-    *)     info "Skipped. You can add it yourself: $line" ;;
-  esac
+  [ -f "$rc" ] || : > "$rc"
+  if grep -q 'claude-tg()' "$rc" 2>/dev/null; then
+    ok "claude-tg function already in $rc"
+    return 0
+  fi
+  grep -q 'alias claude-tg=' "$rc" 2>/dev/null && \
+    warn "an old 'alias claude-tg' is in $rc — delete it; the function below replaces it."
+  if cat >> "$rc" <<'TGFUNC'
+
+# claude-tg: open an interactive Telegram two-way session. The telegram plugin is
+# kept globally disabled (so normal sessions skip its ~2s getUpdates drain at exit);
+# --settings enables it for THIS session only and --channels wires up two-way.
+# Invokes plain `claude` so a user's proxy-wrapper `claude` function still applies.
+unalias claude-tg 2>/dev/null  # drop a stale same-name alias so re-sourcing won't clash
+claude-tg() {
+  claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' \
+         --channels plugin:telegram@claude-plugins-official "$@"
+}
+TGFUNC
+  then
+    ok "claude-tg function added to $rc (run: source $rc)"
+  else
+    warn "couldn't write to $rc — add a claude-tg function yourself (see README)."
+  fi
 }
 
 # Write the managed Telegram block to notify.conf. notify.conf is sourced and we
@@ -185,6 +232,10 @@ write_tg_conf() {
     printf 'NOTIFY_TG_FORUM=%s\n' "$3"
     printf 'NOTIFY_WAIT_TG=1\n'
     printf 'NOTIFY_TG_IMAGE=%s\n' "${4:-0}"
+    # Push-only, no two-way: a finished session's topic has no lasting value, so
+    # delete it on SessionEnd to keep the forum's topic list clean (the script's
+    # own default stays the safer "close" for anyone not configured via here).
+    printf 'NOTIFY_TG_TOPIC_CLEANUP=delete\n'
     printf '%s\n' "$e"
   } >> "$tmp"
   mv "$tmp" "$NOTIFY_CONF"
@@ -247,11 +298,12 @@ setup_telegram_channels() {
     fi
   fi
 
+  disable_telegram_plugin_globally
   add_claude_tg_alias
 
   printf '\n   %b\n' "${CYAN}Finish two-way (interactive — run these yourself):${RESET}"
   printf '     1. Start a two-way session with:  %s\n' "claude-tg"
-  printf '        (or the full: claude --channels plugin:telegram@claude-plugins-official)\n'
+  printf '        (full form: claude --settings '\''{"enabledPlugins":{"telegram@claude-plugins-official":true}}'\'' --channels plugin:telegram@claude-plugins-official)\n'
   printf '     2. DM the bot (or reply to it in the group) — it reaches Claude.\n'
   [ -z "$uid" ] && printf '     3. If you skipped the id: /telegram:access pair <code> to approve yourself.\n'
 }
