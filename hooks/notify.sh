@@ -190,6 +190,10 @@ NOTIFY_TG_TOPIC_TITLE=1
 # pin it at the top of the topic — so the title can stay just the session name.
 # Needs the bot's "Pin Messages" admin right.
 NOTIFY_TG_TOPIC_PIN=1
+# Label identifying THIS machine, appended to a session topic's pinned context
+# line — so several machines sharing one bot/group are distinguishable. Empty →
+# fall back to the short hostname at runtime.
+NOTIFY_TG_HOST_LABEL=""
 # What to do with a session's forum topic when the session ends (SessionEnd):
 #   close  = archive it (keeps history, folds into the "closed" list) [default]
 #   delete = remove the topic and all its messages (irreversible)
@@ -419,6 +423,9 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
             pin_html="<b>📂 $(printf '%s' "$project" | esc)</b>"
             [ -n "$branch" ] && pin_html="${pin_html} ⎇ <code>$(printf '%s' "$branch" | esc)</code>"
             pin_html="${pin_html}"$'\n'"<code>$(printf '%s' "$cwd" | esc)</code>"
+            host_label="$NOTIFY_TG_HOST_LABEL"
+            [ -z "$host_label" ] && host_label=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
+            [ -n "$host_label" ] && pin_html="${pin_html}"$'\n'"🖥 <code>$(printf '%s' "$host_label" | esc)</code>"
             pin_html="${pin_html}"$'\n'"session <code>${session_id}</code>"
             mid=$(curl -fsS -m 10 "${api}/sendMessage" \
                     --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \
