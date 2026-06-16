@@ -219,16 +219,25 @@ prompt, because a hook can't inject input into a running Claude Code session.
 That's exactly what Claude Code's official **Channels** feature does, and it's
 genuinely bidirectional. The installer's guided Telegram setup wires it up for
 you (installs the `telegram@claude-plugins-official` plugin, writes its token and
-an `access.json` allowlist so you skip pairing, and offers a `claude-tg` alias).
-Then start a two-way session with:
+an `access.json` allowlist so you skip pairing, and adds a `claude-tg` shell
+function). Then start a two-way session with:
 
 ```bash
-claude-tg   # = claude --channels plugin:telegram@claude-plugins-official
+claude-tg   # claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' \
+            #        --channels plugin:telegram@claude-plugins-official
 ```
 
-The flag is **per session** — only sessions launched with it bridge to Telegram,
-and a reply drives *that* session. DM the bot or reply to its messages in the
-group to send the next prompt. (Requires Claude Code v2.1.80+, a claude.ai
+**Why the plugin is kept globally *disabled*.** A globally-enabled channel plugin
+spawns its `getUpdates` poller in *every* session, and Claude Code then blocks
+~2s at session end while that poller drains. Push notifications go through
+`notify.sh` (plain `curl`) and don't need the plugin at all — only two-way does.
+So the installer leaves `enabledPlugins."telegram@…"` set to `false`, and
+`claude-tg` re-enables it **for that one session** via `--settings`. Net: ordinary
+`claude` sessions exit instantly; only `claude-tg` pays for (and uses) the poller.
+
+The channel is **per session** — only sessions launched with `claude-tg` bridge to
+Telegram, and a reply drives *that* session. DM the bot or reply to its messages
+in the group to send the next prompt. (Requires Claude Code v2.1.80+, a claude.ai
 Pro/Max plan or Console API key, and the `bun` runtime — the installer offers to
 install `bun` if it's missing.) Avoid building a `tmux send-keys` listener for
 this — it's fragile and Channels is the supported path.
@@ -272,7 +281,8 @@ The installer:
    validates your bot token, auto-detects the chat id, writes the push config to
    `notify.conf`, and — if you opt into two-way replies — installs the official
    Telegram plugin, installs `bun` if needed, writes its token + an `access.json`
-   allowlist (so you skip pairing), and offers to add a `claude-tg` alias. Run
+   allowlist (so you skip pairing), leaves the plugin globally disabled, and adds
+   a `claude-tg` function that enables it per-session. Run
    `bash ~/claude-dotfiles/install.sh` from a terminal to reach this step; under
    `curl | bash` it's skipped (stdin isn't a TTY) and the installer says so. Opt
    out with `SKIP_TELEGRAM_SETUP=1`.

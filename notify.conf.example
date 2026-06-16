@@ -33,6 +33,12 @@ NOTIFY_WAIT_TITLE=0; NOTIFY_WAIT_BELL=1; NOTIFY_WAIT_DESKTOP=1; NOTIFY_WAIT_SOUN
 NOTIFY_DONE_TABCOLOR="40 200 80"     # green
 NOTIFY_WAIT_TABCOLOR="230 180 40"    # amber
 NOTIFY_TABCOLOR_RESET=1
+# A Notification means one of two things: a real permission/decision prompt
+# ("Claude needs your permission…") or the idle nudge ("Claude is waiting for
+# your input"). Only the first turns the tab amber and fires the loud/Telegram
+# channels; the idle case is reclassified as low-key "idle". By default idle does
+# NOT recolor the tab (it keeps the green "done"); set a "R G B" triple to tint it.
+NOTIFY_IDLE_TABCOLOR=""              # e.g. "90 110 140" for a dim slate idle tint
 
 # Animated "processing" progress bar on the tab while Claude is working — the
 # moving bar starts when you submit a prompt and stops when the turn ends (or
@@ -109,11 +115,20 @@ NOTIFY_TG_CHAT_ID=""
 
 # One forum topic per Claude session (so each session is its own thread). The
 # chat must be a forum supergroup (Group → Edit → Topics on) and the bot an
-# admin with "Manage Topics". The topic is named "project ⎇ branch · <short
-# session id>" (the suffix keeps two sessions of the same project/branch as
-# separate topics) and its id is cached in ~/.claude/.tg_topic_<session_id> so
-# later messages reuse it. Off → plain messages to the group, prefixed with project.
+# admin with "Manage Topics". Its id is cached in ~/.claude/.tg_topic_<session_id>
+# as one JSON line {"thread":"…","title":"…"} so later messages reuse it.
+# Off → plain messages to the group, prefixed with project.
 NOTIFY_TG_FORUM=0
+
+# Name each session's topic after the session's title — Claude's `ai-title`, which
+# appears a few turns in; falls back to the first prompt, then "project ⎇ branch".
+# The topic is renamed if/when that title changes. 0 = static "project ⎇ branch ·
+# <short session id>" naming. Renaming needs the bot's "Manage Topics" admin right.
+NOTIFY_TG_TOPIC_TITLE=1
+# On topic creation, post a context line (project / branch / cwd / session id) and
+# pin it at the top of the topic, so the title can stay just the session name.
+# Needs the bot's "Pin Messages" admin right. 0 = no pinned context message.
+NOTIFY_TG_TOPIC_PIN=1
 
 # When the session ends (SessionEnd hook), what to do with its forum topic:
 #   close  = archive it — keeps history, folds it into the group's "closed" list
@@ -126,5 +141,7 @@ NOTIFY_TG_TOPIC_CLEANUP=close
 
 # Want to also REPLY in Telegram to drive the session (issue new tasks)? A hook
 # can't inject prompts into a running session — that's Claude Code's official
-# bidirectional "Channels" feature, not this hook. See the README "Two-way
-# control" note: launch `claude --channels plugin:telegram@claude-plugins-official`.
+# bidirectional "Channels" feature, not this hook. The installer adds a `claude-tg`
+# function for it (the plugin stays globally disabled so normal sessions skip its
+# ~2s getUpdates drain at exit; claude-tg enables it per-session). See the README
+# "Two-way control" note.

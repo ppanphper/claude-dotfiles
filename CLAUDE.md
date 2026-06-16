@@ -55,6 +55,12 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   payload lacks it, so the hook falls back to the **last assistant text in the
   transcript** (`tail -n 100 transcript_path | jq` over `.message.content[] |
   select(.type=="text")`), then to `.message`.
+- **A `Notification` is overloaded**: it fires for a real permission/decision
+  prompt *and* for the idle "Claude is waiting for your input" nudge. The hook
+  reclassifies the idle case (matched on that exact string in `.message`) into a
+  low-key **`idle`** state that stops the progress bar and otherwise no-ops — no
+  amber tab, no bell/desktop/Telegram. Only genuine decisions stay `wait` (amber).
+  Unrecognized notifications default to `wait` (safe side — still surfaced).
 - **Focus-aware mute** (macOS) gates only the *local loud* channels
   (bell/desktop/sound) — never the silent title glyph or the remote Telegram
   push (you may be away with the terminal still frontmost). It uses one
@@ -63,10 +69,31 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
 - **Telegram** runs in a backgrounded subshell so neither the topic-create nor
   the send delays the prompt. With `NOTIFY_TG_FORUM=1` it maps one forum topic
   per session, cached in `~/.claude/.tg_topic_<session_id>` — the same
-  per-session-file pattern as the worktree tracker.
+  per-session-file pattern as the worktree tracker. The cache file is **one JSON
+  line** `{"thread":"…","title":"…"}` (read/written by field via jq + the
+  `tg_cache_write` helper — robust to titles with quotes/CJK). With
+  `NOTIFY_TG_TOPIC_TITLE=1` the topic is named after the session's `ai-title`
+  (read from the transcript via `tg_topic_title`; falls back to `last-prompt`,
+  then `project ⎇ branch`) and **renamed** (`editForumTopic`) whenever that title
+  changes — because `ai-title` only appears a few turns after the topic is first
+  created. `NOTIFY_TG_TOPIC_PIN=1` posts the project/branch/cwd/session context
+  once on creation and pins it (`pinChatMessage`), keeping the title clean. Both
+  need the bot to be a group admin (Manage Topics / Pin Messages).
 - Two-way control (reply → new prompt) is intentionally **not** built here: a
   hook can't inject input into a running session. That's Claude Code's official
   `--channels` feature; don't add a `tmux send-keys` listener.
+- The telegram plugin is kept **globally disabled** (`enabledPlugins."telegram@…"
+  = false`), and `install.sh`'s `disable_telegram_plugin_globally` enforces that
+  after install. Reason: a globally-enabled channel plugin spawns its `getUpdates`
+  poller in *every* session, and Claude Code blocks ~2s at session end draining it
+  (the plugin's `server.ts` caps the drain at 2s). Push (notify.sh) is plain `curl`
+  and needs no plugin, so only two-way does — and the `claude-tg` shell function
+  (written by `add_claude_tg_alias`) re-enables it **per session** via `--settings
+  '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels
+  plugin:telegram@claude-plugins-official`. `--channels` alone will **not**
+  force-load a disabled plugin (verified), hence the `--settings` half. Keep both
+  flags together. `claude-tg` calls bare `claude` (not `command claude`) so a
+  user's proxy-wrapper `claude` function still applies.
 
 When adding a channel or event, keep the always-`exit 0`,
 auto-skip-if-tool/config-missing discipline the other scripts follow.
