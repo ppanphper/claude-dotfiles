@@ -11,9 +11,10 @@ suite. End users install via `install.sh`, which symlinks the scripts into
 
 - `statusline.sh` — the status-line renderer Claude Code invokes on every refresh.
 - `hooks/worktree-tracker.sh` — a `PostToolUse`/`Bash` hook that tracks `git worktree add`.
-- `hooks/notify.sh` — a `Stop` + `Notification` + `UserPromptSubmit` hook that
-  alerts you when Claude finishes or needs input, across six channels (iTerm2 tab
-  color, tab-title glyph, bell, desktop notification, sound, Telegram push).
+- `hooks/notify.sh` — a `Stop` + `Notification` + `UserPromptSubmit` + `SessionEnd`
+  + `PostToolUse(AskUserQuestion)` hook that alerts you when Claude finishes or
+  needs input, across six channels (iTerm2 tab color, tab-title glyph, bell,
+  desktop notification, sound, Telegram push).
   Configured by `~/.claude/notify.conf` (seeded from `notify.conf.example`).
 - `install.sh` — idempotent installer (clone → symlink → merge settings → check deps).
 
@@ -37,8 +38,10 @@ The status line and the hook are coupled through a **per-session file**,
 
 When changing the file path/format, both scripts must stay in sync.
 
-`notify.sh` is wired to three events: `Stop` → **done** (🟢), `Notification` →
-**wait** (🟡), `UserPromptSubmit` → **reset** (clears the iTerm2 tab color).
+`notify.sh` is wired to five events: `Stop` → **done** (🟢), `Notification` →
+**wait** (🟡), `UserPromptSubmit` → **reset** (clears the iTerm2 tab color),
+`SessionEnd` → **end** (clears decor + cleans up the forum topic), and
+`PostToolUse` *matched to `AskUserQuestion`* → also **reset**.
 Channels are toggled *per state* via `notify.conf`. Notable details:
 
 - **A Claude Code hook has no controlling terminal**, so `/dev/tty` can't be
@@ -55,6 +58,21 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   payload lacks it, so the hook falls back to the **last assistant text in the
   transcript** (`tail -n 100 transcript_path | jq` over `.message.content[] |
   select(.type=="text")`), then to `.message`.
+- **`AskUserQuestion` waits surface the question, not the last reply.** When the
+  last assistant `tool_use` in the transcript is an `AskUserQuestion`, the
+  `wait` summary is built from its `input.questions[]` — each `question` plus its
+  `options[].label` (a `▸ question` / `• option` list) — because the choices live
+  in the tool input, not in any assistant text. Other notifications fall through
+  to the text-summary logic above untouched.
+- **Answering an in-TUI question doesn't fire `UserPromptSubmit`.** So the amber
+  set by the `AskUserQuestion` `Notification` would linger until the next
+  `Stop`/typed prompt. The `PostToolUse(AskUserQuestion)` hook closes that gap:
+  when the tool completes (you answered, Claude resumes) it runs the same
+  **`reset`** as a typed prompt — clears the tab color, restarts the progress
+  bar. A `tool_name` guard keeps it a no-op for any other `PostToolUse` even if
+  the matcher is broadened. (Permission-prompt approvals share the same gap but
+  aren't covered — their tool name varies; the amber there clears at the next
+  `Stop`.)
 - **A `Notification` is overloaded**: it fires for a real permission/decision
   prompt *and* for the idle "Claude is waiting for your input" nudge. The hook
   reclassifies the idle case (matched on that exact string in `.message`) into a

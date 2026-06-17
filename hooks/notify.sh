@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# Notify hook for Claude Code. Wire to three events in settings.json:
+# Notify hook for Claude Code. Wire to these events in settings.json:
 #   - Stop             → Claude finished a turn        (state "done", green tab)
 #   - Notification     → Claude needs input/permission (state "wait", amber tab)
 #   - UserPromptSubmit → you sent a prompt             (state "reset", clears tab)
 #   - SessionEnd       → the session ended             (state "end", topic cleanup)
+#   - PostToolUse(AskUserQuestion) → you answered an in-TUI question
+#                                    (state "reset", clears the amber tab)
+#
+# Why PostToolUse: answering an AskUserQuestion (or approving a permission prompt)
+# in the TUI does NOT emit UserPromptSubmit, so the amber tab set by the matching
+# Notification would otherwise linger until the next Stop/typed prompt. Hooking
+# PostToolUse for AskUserQuestion clears it the moment Claude resumes working.
 #
 # UserPromptSubmit also starts an iTerm2 OSC 9;4 "indeterminate" progress bar (an
 # animated bar on the tab) that signals "processing"; Stop/Notification clear it.
@@ -45,6 +52,12 @@ case "$event" in
   Notification)     state="wait" ;;
   UserPromptSubmit) state="reset" ;;
   SessionEnd)       state="end" ;;
+  # Answering an AskUserQuestion in the TUI doesn't fire UserPromptSubmit, so treat
+  # the tool's completion as a "reset" (clear the amber tab, restart the progress
+  # bar). Other tools' PostToolUse is ignored — the matcher in settings.json should
+  # already scope this to AskUserQuestion; the guard is belt-and-suspenders.
+  PostToolUse)
+    [ "$(j '.tool_name')" = "AskUserQuestion" ] && state="reset" || exit 0 ;;
   *) exit 0 ;;
 esac
 
@@ -210,10 +223,11 @@ CONF="${CLAUDE_NOTIFY_CONF:-$HOME/.claude/notify.conf}"
 
 [ "$NOTIFY_ENABLED" = "1" ] || exit 0
 
-# --- reset: prompt submitted → clear the tab color, start the progress bar ----
-# This is the "you're now typing / driving the session again" event, so it
-# clears the amber/green left from the previous turn AND starts the animated
-# processing indicator that runs until the next Stop/Notification.
+# --- reset: prompt submitted / question answered → clear tab, start progress ---
+# This is the "you're now driving the session again" event (a typed prompt, or an
+# AskUserQuestion answered in the TUI), so it clears the amber/green left from the
+# previous turn AND starts the animated processing indicator that runs until the
+# next Stop/Notification.
 if [ "$state" = "reset" ]; then
   [ "$NOTIFY_TABCOLOR_RESET" = "1" ] && [ "$IS_ITERM" = "1" ] && \
     tw "${ESC}]6;1;bg;*;default${BEL}"
@@ -267,6 +281,27 @@ fi
 # --- summary source (Stop carries it; Notification needs the transcript) -----
 summary_raw=$(j '.last_assistant_message')
 transcript=$(j '.transcript_path')
+
+# A "wait" raised by AskUserQuestion is the one case where the thing you need to
+# see — the question and its options — lives in the tool_use INPUT, not in any
+# assistant text. If the last assistant tool_use is an AskUserQuestion, format
+# its questions + option labels and use that as the summary (so the desktop/
+# Telegram alert tells you what's being asked). Falls through untouched for
+# permission prompts and every other notification.
+if [ "$state" = "wait" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+  aq=$(tail -n 200 "$transcript" 2>/dev/null | jq -rs '
+    ( [ .[] | select(.type=="assistant") | .message.content[]?
+        | select(.type=="tool_use") ] | last ) as $t
+    | if ($t != null and $t.name == "AskUserQuestion")
+      then [ $t.input.questions[]
+             | "▸ " + .question
+               + ( [ .options[] | "\n   • " + .label ] | join("") ) ]
+           | join("\n")
+      else empty end
+  ' 2>/dev/null)
+  [ -n "$aq" ] && summary_raw="$aq"
+fi
+
 if [ -z "$summary_raw" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
   summary_raw=$(tail -n 100 "$transcript" 2>/dev/null | jq -rs '
     [ .[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text ] | last // empty
