@@ -12,9 +12,9 @@ suite. End users install via `install.sh`, which symlinks the scripts into
 - `statusline.sh` — the status-line renderer Claude Code invokes on every refresh.
 - `hooks/worktree-tracker.sh` — a `PostToolUse`/`Bash` hook that tracks `git worktree add`.
 - `hooks/notify.sh` — a `Stop` + `Notification` + `UserPromptSubmit` + `SessionEnd`
-  + `PostToolUse(AskUserQuestion)` hook that alerts you when Claude finishes or
-  needs input, across six channels (iTerm2 tab color, tab-title glyph, bell,
-  desktop notification, sound, Telegram push).
+  + `PreToolUse(AskUserQuestion)` + `PostToolUse(AskUserQuestion)` hook that alerts
+  you when Claude finishes or needs input, across six channels (iTerm2 tab color,
+  tab-title glyph, bell, desktop notification, sound, Telegram push).
   Configured by `~/.claude/notify.conf` (seeded from `notify.conf.example`).
 - `install.sh` — idempotent installer (clone → symlink → merge settings → check deps).
 
@@ -38,10 +38,11 @@ The status line and the hook are coupled through a **per-session file**,
 
 When changing the file path/format, both scripts must stay in sync.
 
-`notify.sh` is wired to five events: `Stop` → **done** (🟢), `Notification` →
+`notify.sh` is wired to six events: `Stop` → **done** (🟢), `Notification` →
 **wait** (🟡), `UserPromptSubmit` → **reset** (clears the iTerm2 tab color),
-`SessionEnd` → **end** (clears decor + cleans up the forum topic), and
-`PostToolUse` *matched to `AskUserQuestion`* → also **reset**.
+`SessionEnd` → **end** (clears decor + cleans up the forum topic),
+`PreToolUse` *matched to `AskUserQuestion`* → **cache the question** (no alert),
+and `PostToolUse` *matched to `AskUserQuestion`* → also **reset**.
 Channels are toggled *per state* via `notify.conf`. Notable details:
 
 - **A Claude Code hook has no controlling terminal**, so `/dev/tty` can't be
@@ -58,12 +59,24 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   payload lacks it, so the hook falls back to the **last assistant text in the
   transcript** (`tail -n 100 transcript_path | jq` over `.message.content[] |
   select(.type=="text")`), then to `.message`.
-- **`AskUserQuestion` waits surface the question, not the last reply.** When the
-  last assistant `tool_use` in the transcript is an `AskUserQuestion`, the
-  `wait` summary is built from its `input.questions[]` — each `question` plus its
-  `options[].label` (a `▸ question` / `• option` list) — because the choices live
-  in the tool input, not in any assistant text. Other notifications fall through
-  to the text-summary logic above untouched.
+- **`AskUserQuestion` waits surface the question, not the last reply.** The
+  `wait` summary is built from the tool's `input.questions[]` — each `question`
+  plus its `options[].label` (a `▸ question` / `• option` list) — because the
+  choices live in the tool input, not in any assistant text. **The reliable
+  source is `PreToolUse(AskUserQuestion)`**, which fires *before* the question
+  renders and carries `.tool_input.questions[]` directly: that branch formats the
+  block and caches it to a per-session file `~/.claude/.aq_summary_<session_id>`
+  (same per-session-file pattern as the worktree tracker). The `Notification`
+  (`wait`) handler then prefers that cache. This exists because the obvious
+  approach — reading the last `AskUserQuestion` `tool_use` back from the
+  transcript on `Notification` — hits a **flush race**: the assistant message
+  carrying the tool_use often isn't written to `transcript_path` yet when the
+  `Notification` hook reads it, so the scan finds the *previous* tool_use (e.g. an
+  `Edit`) and the summary falls through to the pre-question text. That transcript
+  scan is kept only as a fallback for installs that predate the PreToolUse hook.
+  The cache is cleared on `reset` (answered question or new typed prompt) and on
+  `end`, so a stale question can't attach to a later permission `Notification`.
+  Other notifications fall through to the text-summary logic above untouched.
 - **Answering an in-TUI question doesn't fire `UserPromptSubmit`.** So the amber
   set by the `AskUserQuestion` `Notification` would linger until the next
   `Stop`/typed prompt. The `PostToolUse(AskUserQuestion)` hook closes that gap:
@@ -149,6 +162,13 @@ COLUMNS=60 ./statusline.sh < payload.json
 printf '%s' '{"hook_event_name":"Stop","cwd":"'"$PWD"'"}' | ./hooks/notify.sh
 printf '%s' '{"hook_event_name":"Notification","cwd":"'"$PWD"'","message":"Allow Bash?"}' | ./hooks/notify.sh
 CLAUDE_NOTIFY_CONF=/tmp/n.conf ./hooks/notify.sh < payload.json   # test config overrides
+
+# AskUserQuestion: PreToolUse caches the question, the next Notification(wait)
+# uses that cache (no transcript flush race). The cache is cleared on reset/end.
+printf '%s' '{"hook_event_name":"PreToolUse","session_id":"test","cwd":"'"$PWD"'","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Ship it?","header":"Ship","options":[{"label":"Yes"},{"label":"No"}]}]}}' | ./hooks/notify.sh
+cat ~/.claude/.aq_summary_test   # ▸ Ship it? / • Yes / • No
+printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"test","cwd":"'"$PWD"'"}' | ./hooks/notify.sh
+test -f ~/.claude/.aq_summary_test && echo "BUG: cache lingered" || echo "cache cleared"
 
 # Exercise the worktree hook.
 echo '{"tool_name":"Bash","session_id":"test","cwd":"'"$PWD"'","tool_input":{"command":"git worktree add ../foo -b feat/x"}}' \
