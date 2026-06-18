@@ -52,6 +52,24 @@ case "$event" in
   Notification)     state="wait" ;;
   UserPromptSubmit) state="reset" ;;
   SessionEnd)       state="end" ;;
+  # AskUserQuestion fires PreToolUse (before the question renders), then a
+  # Notification (the "wait"). The question + options live in the tool INPUT, not
+  # in any assistant text — and the assistant message carrying the tool_use isn't
+  # reliably flushed to the transcript by the time the Notification hook reads it
+  # (a real flush race), so reading it back from the transcript on Notification
+  # often loses to the pre-question text. PreToolUse carries .tool_input directly,
+  # with no race, so cache the formatted question here; the wait path below prefers
+  # this cache (transcript scan kept only as a fallback for un-upgraded installs).
+  PreToolUse)
+    [ "$(j '.tool_name')" = "AskUserQuestion" ] || exit 0
+    if [ -n "$session_id" ]; then
+      aq=$(printf '%s' "$input" | jq -r '
+        [ .tool_input.questions[]?
+          | "▸ " + .question + ( [ .options[]? | "\n   • " + .label ] | join("") ) ]
+        | join("\n")' 2>/dev/null)
+      [ -n "$aq" ] && printf '%s' "$aq" > "$HOME/.claude/.aq_summary_${session_id}" 2>/dev/null
+    fi
+    exit 0 ;;
   # Answering an AskUserQuestion in the TUI doesn't fire UserPromptSubmit, so treat
   # the tool's completion as a "reset" (clear the amber tab, restart the progress
   # bar). Other tools' PostToolUse is ignored — the matcher in settings.json should
@@ -231,6 +249,9 @@ CONF="${CLAUDE_NOTIFY_CONF:-$HOME/.claude/notify.conf}"
 if [ "$state" = "reset" ]; then
   [ "$NOTIFY_TABCOLOR_RESET" = "1" ] && [ "$IS_ITERM" = "1" ] && \
     tw "${ESC}]6;1;bg;*;default${BEL}"
+  # The pending AskUserQuestion (if any) was just answered / superseded by a typed
+  # prompt — drop its cached summary so it can't attach to a later notification.
+  [ -n "$session_id" ] && rm -f "$HOME/.claude/.aq_summary_${session_id}" 2>/dev/null
   prog 3
   exit 0
 fi
@@ -246,6 +267,7 @@ if [ "$state" = "end" ]; then
   [ "$NOTIFY_TABCOLOR_RESET" = "1" ] && [ "$IS_ITERM" = "1" ] && \
     tw "${ESC}]6;1;bg;*;default${BEL}"
   prog 0
+  [ -n "$session_id" ] && rm -f "$HOME/.claude/.aq_summary_${session_id}" 2>/dev/null
 
   [ "$NOTIFY_TG_TOPIC_CLEANUP" = "off" ] && exit 0
   tf="$HOME/.claude/.tg_topic_${session_id}"
@@ -284,11 +306,16 @@ transcript=$(j '.transcript_path')
 
 # A "wait" raised by AskUserQuestion is the one case where the thing you need to
 # see — the question and its options — lives in the tool_use INPUT, not in any
-# assistant text. If the last assistant tool_use is an AskUserQuestion, format
-# its questions + option labels and use that as the summary (so the desktop/
-# Telegram alert tells you what's being asked). Falls through untouched for
-# permission prompts and every other notification.
-if [ "$state" = "wait" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+# assistant text. The PreToolUse(AskUserQuestion) branch above cached it to a
+# per-session file the moment the tool was invoked (no transcript flush race), so
+# prefer that. Fall back to scanning the transcript for the last AskUserQuestion
+# tool_use (covers installs that predate the PreToolUse hook). Falls through
+# untouched for permission prompts and every other notification.
+if [ "$state" = "wait" ] && [ -n "$session_id" ] \
+   && [ -f "$HOME/.claude/.aq_summary_${session_id}" ]; then
+  aq=$(cat "$HOME/.claude/.aq_summary_${session_id}" 2>/dev/null)
+  [ -n "$aq" ] && summary_raw="$aq"
+elif [ "$state" = "wait" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
   aq=$(tail -n 200 "$transcript" 2>/dev/null | jq -rs '
     ( [ .[] | select(.type=="assistant") | .message.content[]?
         | select(.type=="tool_use") ] | last ) as $t

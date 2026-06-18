@@ -665,11 +665,11 @@ merge_settings() {
           else $arr + [{matcher:"", hooks:[{type:"command", command:$notify}]}]
           end
       );
-    # Ensure a PostToolUse matcher group carries $cmd exactly once, leaving any
-    # other PostToolUse matchers (and other commands on this matcher) intact.
-    def ensure_ptu($matcher; $cmd):
-      .hooks.PostToolUse = (
-        (.hooks.PostToolUse // []) as $arr
+    # Ensure a Pre/PostToolUse matcher group carries $cmd exactly once, leaving any
+    # other matchers (and other commands on this matcher) intact.
+    def ensure_tu($event; $matcher; $cmd):
+      .hooks[$event] = (
+        (.hooks[$event] // []) as $arr
         | if ($arr | any(.matcher == $matcher)) then
             $arr | map(
               if .matcher == $matcher then
@@ -686,8 +686,9 @@ merge_settings() {
       );
     .statusLine = $sl
     | .spinnerVerbs //= $spin
-    | ensure_ptu("Bash"; $hook)
-    | ensure_ptu("AskUserQuestion"; $notify)
+    | ensure_tu("PostToolUse"; "Bash"; $hook)
+    | ensure_tu("PostToolUse"; "AskUserQuestion"; $notify)
+    | ensure_tu("PreToolUse"; "AskUserQuestion"; $notify)
     | ensure_event("Stop")
     | ensure_event("Notification")
     | ensure_event("UserPromptSubmit")
