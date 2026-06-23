@@ -23,6 +23,25 @@ ok()   { printf '%b\n' "${GREEN}✓${RESET}  $1"; }
 warn() { printf '%b\n' "${YELLOW}!${RESET}  $1"; }
 die()  { printf '%b\n' "${RED}✗${RESET}  $1" >&2; exit 1; }
 
+# Locate a headless-Chrome binary the same way hooks/render-reply.py's find_chrome
+# does (keep this candidate list in sync with CHROME_CANDIDATES there). Image mode
+# treats Chrome as a HARD dependency — without it render-reply.py exits non-zero and
+# notify.sh silently falls back to a truncated text message — so the installer probes
+# for it before offering to enable NOTIFY_TG_IMAGE. Echoes the path, or nothing.
+find_chrome() {
+  local c
+  for c in "${NOTIFY_CHROME:-}" \
+           "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+           "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+           "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
+           google-chrome google-chrome-stable chromium chromium-browser chrome; do
+    [ -n "$c" ] || continue
+    if [ -x "$c" ]; then printf '%s' "$c"; return 0; fi
+    local p; p=$(command -v "$c" 2>/dev/null) && [ -n "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
 # --- prerequisites ---
 command -v git >/dev/null || die "git not installed"
 
@@ -392,14 +411,31 @@ setup_telegram() {
     esac
   fi
 
-  # Image mode: render the full reply to an image (needs python3 + headless
-  # Chrome; degrades to text if either is missing).
+  # Image mode: render the full reply to an image. Needs python3 AND headless
+  # Chrome — both hard deps for hooks/render-reply.py; if either is missing the
+  # render fails and notify.sh silently falls back to a truncated text message.
+  # So probe BOTH up front and, if Chrome is absent, say plainly that turning this
+  # on will just send text, so the user can decide rather than be surprised later.
   local image=0
   if command -v python3 >/dev/null 2>&1; then
+    local chrome; chrome=$(find_chrome || true)
     printf '\n   Send the FULL reply as a rendered image (web-quality layout, no\n'
-    printf '   truncation; needs headless Chrome — falls back to text if absent)? [y/N] '
+    printf '   truncation; needs headless Chrome)? [y/N] '
     local im; read -r im || true
-    case "$im" in [yY]*) image=1 ;; esac
+    if [ "${im:0:1}" = "y" ] || [ "${im:0:1}" = "Y" ]; then
+      if [ -n "$chrome" ]; then
+        image=1; info "found Chrome: $chrome"
+      else
+        warn "no Chrome/Chromium/Edge found — NOTIFY_TG_IMAGE would silently fall back"
+        warn "to a truncated TEXT message (render-reply.py needs a headless browser)."
+        printf '   Enable image mode anyway (install Chrome later, or set NOTIFY_CHROME)? [y/N] '
+        local im2; read -r im2 || true
+        case "$im2" in [yY]*) image=1; info "image mode on — remember to install Chrome." ;;
+                       *) info "left image mode off; Telegram will send text summaries." ;; esac
+      fi
+    fi
+  else
+    info "python3 not found — skipping image mode (Telegram will send text summaries)."
   fi
 
   write_tg_conf "$token" "$chat" "$forum" "$image"

@@ -110,6 +110,41 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   created. `NOTIFY_TG_TOPIC_PIN=1` posts the project/branch/cwd/session context
   once on creation and pins it (`pinChatMessage`), keeping the title clean. Both
   need the bot to be a group admin (Manage Topics / Pin Messages).
+- **Image mode (`NOTIFY_TG_IMAGE=1`)** renders the full reply to a PNG via
+  `hooks/render-reply.py` (headless Chrome) and sends `sendPhoto`/`sendDocument`
+  instead of the truncated text. Replies shorter than `NOTIFY_TG_IMAGE_MIN_CHARS`
+  skip the render and go out as a *complete* text message (short replies stay
+  quick/copyable; only long ones become images) — that threshold also caps those
+  text sends, so the image branch is entered only when `summary_raw` exceeds it. Two traps are baked in here. **(1) curl `-F` vs
+  `--form-string`.** `-F "caption=<value>"` treats a value beginning with `<` as
+  *"read the field from this file"* (and `@` as *"attach this file"*), and the
+  caption is HTML starting with `<b>` — so `-F` tried to open a file named after
+  the caption and failed with **exit 26** (`CURLE_READ_ERROR`), the real reason
+  image mode silently fell back to text. Every *literal* field is sent with
+  `--form-string` (verbatim, no `<`/`@` magic); only the image stays `-F
+  field=@file`. Don't "simplify" these back to `-F`. **(2) Non-silent failure.**
+  The whole branch used to swallow stderr; it now logs each step (python path,
+  render rc + stderr, curl exit code + response) to `~/.claude/notify-debug.log`
+  under `NOTIFY_DEBUG=1`, and checks the response for `"ok":true` (not just curl's
+  exit) so an API rejection is told apart from a network error. The renderer takes
+  `--accent` (status colour: green done / amber wait, via
+  `NOTIFY_TG_IMAGE_ACCENT_{DONE,WAIT}`), `--theme` (`dark`/`light`, CSS-variable
+  palette), and `--meta` (a host · cwd · branch · time line under the header,
+  `NOTIFY_TG_IMAGE_META`). Code blocks get a macOS-style title bar (traffic-light
+  dots + language label); the language is recovered from the source fences
+  (`fence_langs`) because codehilite drops it, and re-attached in source order
+  (`decorate_code_blocks`, which no-ops on a count mismatch). `body{min-height:
+  100vh}` makes Chrome's over-tall screenshot fill with the real bg colour so
+  `autocrop` can trim it — without it a light theme shows a black tail.
+  `--semantic` (`NOTIFY_TG_IMAGE_SEMANTIC`) colours by importance: status symbols
+  (✓✗⚠), the value inside an inline `code` (`true`/`rc=0`→green, `false`/`error`→
+  red), a small CN/EN keyword dictionary (with a `不/没/无/未` negative-lookbehind
+  so 不成功 isn't greened), and `> [!WARNING]`/`[!TIP]`… alert cards. `semantic_html`
+  runs AFTER stashing code blocks out (so source is never recoloured) and only on
+  text nodes between tags (so output stays valid HTML); the alert pass splits one
+  merged `<blockquote>` into multiple cards because markdown fuses adjacent `>`
+  blocks. Objective signals are false-hit-free; the keyword dictionary is the one
+  fuzzy part — keep it small and high-confidence.
 - Two-way control (reply → new prompt) is intentionally **not** built here: a
   hook can't inject input into a running session. That's Claude Code's official
   `--channels` feature; don't add a `tmux send-keys` listener.
