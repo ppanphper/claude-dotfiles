@@ -112,7 +112,10 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   need the bot to be a group admin (Manage Topics / Pin Messages).
 - **Image mode (`NOTIFY_TG_IMAGE=1`)** renders the full reply to a PNG via
   `hooks/render-reply.py` (headless Chrome) and sends `sendPhoto`/`sendDocument`
-  instead of the truncated text. Two traps are baked in here. **(1) curl `-F` vs
+  instead of the truncated text. Replies shorter than `NOTIFY_TG_IMAGE_MIN_CHARS`
+  skip the render and go out as a *complete* text message (short replies stay
+  quick/copyable; only long ones become images) — that threshold also caps those
+  text sends, so the image branch is entered only when `summary_raw` exceeds it. Two traps are baked in here. **(1) curl `-F` vs
   `--form-string`.** `-F "caption=<value>"` treats a value beginning with `<` as
   *"read the field from this file"* (and `@` as *"attach this file"*), and the
   caption is HTML starting with `<b>` — so `-F` tried to open a file named after

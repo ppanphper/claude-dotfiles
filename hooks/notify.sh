@@ -212,6 +212,12 @@ NOTIFY_TG_SUMMARY_MAX=600
 # back to the text message if either is missing). See hooks/render-reply.py.
 NOTIFY_TG_IMAGE=0
 NOTIFY_TG_IMAGE_WIDTH=760
+# Smart routing: if the reply is shorter than this many characters, send it as a
+# *complete* text message (no image); only at/above this length is it rendered to a
+# PNG — so short replies stay quick/copyable and only long ones become images. Also
+# the length cap for those text sends, so keep it <= ~3000 to stay under Telegram's
+# 4096-char message limit after HTML-escaping. Only consulted when NOTIFY_TG_IMAGE=1.
+NOTIFY_TG_IMAGE_MIN_CHARS=900
 # Status accent colour for the rendered image (header bar / status dot / links /
 # list markers / quote rule): green for a finished turn, amber for "needs you", so
 # done vs wait reads at a glance. Any CSS colour string.
@@ -477,8 +483,13 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
   tg_hdr=$(printf '%s' "$title_text · $label" | esc)
   tg_html="<b>${glyph} ${tg_hdr}</b>"
   if [ "$NOTIFY_SUMMARY" = "1" ] && [ -n "$summary_raw" ]; then
+    # In image mode the only replies that reach the text path are the short ones
+    # (below MIN_CHARS, or a failed render) — send them in full, so widen the cap
+    # from the desktop-popup budget to MIN_CHARS instead of truncating to ~600.
+    tg_max="$NOTIFY_TG_SUMMARY_MAX"
+    [ "$NOTIFY_TG_IMAGE" = "1" ] && tg_max="$NOTIFY_TG_IMAGE_MIN_CHARS"
     tg_sum="$summary_raw"
-    [ "${#tg_sum}" -gt "$NOTIFY_TG_SUMMARY_MAX" ] && tg_sum="${tg_sum:0:$NOTIFY_TG_SUMMARY_MAX}…"
+    [ "${#tg_sum}" -gt "$tg_max" ] && tg_sum="${tg_sum:0:$tg_max}…"
     tg_sum=$(printf '%s' "$tg_sum" | md2tg_html)
     [ -n "$tg_sum" ] && tg_html="${tg_html}"$'\n'"${tg_sum}"
   fi
@@ -554,8 +565,9 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
     # and stderr (the upload, not the render, is where this historically failed),
     # and the response is checked for "ok":true so an API rejection is told apart
     # from a network error.
-    if [ "$NOTIFY_TG_IMAGE" = "1" ] && [ -n "$summary_raw" ] && command -v python3 >/dev/null 2>&1; then
-      dbg "img: mode on py=$(command -v python3) summary_len=${#summary_raw}"
+    if [ "$NOTIFY_TG_IMAGE" = "1" ] && [ -n "$summary_raw" ] \
+       && [ "${#summary_raw}" -gt "$NOTIFY_TG_IMAGE_MIN_CHARS" ] && command -v python3 >/dev/null 2>&1; then
+      dbg "img: mode on py=$(command -v python3) summary_len=${#summary_raw} min=$NOTIFY_TG_IMAGE_MIN_CHARS"
       render=$(python3 -c "import os,sys;print(os.path.join(os.path.dirname(os.path.realpath(sys.argv[1])),'render-reply.py'))" "$0" 2>/dev/null)
       if [ -n "$render" ] && [ -f "$render" ]; then
         td=$(mktemp -d 2>/dev/null) || td=""
@@ -600,7 +612,7 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
         dbg "img: render-reply.py not found (render=$render)"
       fi
     elif [ "$NOTIFY_TG_IMAGE" = "1" ]; then
-      dbg "img: skipped (summary_len=${#summary_raw} python3=$(command -v python3 2>/dev/null || echo none))"
+      dbg "img: skipped → text (summary_len=${#summary_raw} min=$NOTIFY_TG_IMAGE_MIN_CHARS python3=$(command -v python3 2>/dev/null || echo none))"
     fi
 
     if [ "$sent" = "0" ]; then

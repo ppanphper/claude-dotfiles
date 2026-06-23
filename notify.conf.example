@@ -91,6 +91,10 @@ NOTIFY_TG_SUMMARY_MAX=600
 # NOTIFY_TG_IMAGE_WIDTH 是渲染宽度（像素，2 倍缩放前）。
 NOTIFY_TG_IMAGE=0
 NOTIFY_TG_IMAGE_WIDTH=760
+# 智能分流：回复短于这么多字符就直接发"完整文本"（不渲染图片），≥ 此值才渲染成图片
+# —— 短回复保持轻快、可复制，只有长回复才变成图片。这个值同时是这类文本的长度上限，
+# 建议 ≤ 3000，以免 HTML 化后超出 Telegram 4096 字符的消息上限。仅在图片模式开启时生效。
+NOTIFY_TG_IMAGE_MIN_CHARS=900
 # 图片里的状态强调色（顶部状态条/状态圆点/链接/列表标记/引用左条）：完成用绿、
 # 等待输入用琥珀，一眼区分 done 与 wait。任意 CSS 颜色字符串。
 NOTIFY_TG_IMAGE_ACCENT_DONE="#3fb950"
