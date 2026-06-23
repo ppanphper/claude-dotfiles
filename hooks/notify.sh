@@ -165,6 +165,11 @@ tg_topic_title() {
 # Reading by field (jq) beats line positions — a title can hold anything.
 tg_cache_write() { jq -nc --arg thread "$1" --arg title "$2" '{thread:$thread,title:$title}' > "$3"; }
 
+# Append a diagnostics line to ~/.claude/notify-debug.log when NOTIFY_DEBUG=1.
+# Used by the image branch (which otherwise swallows every failure with 2>/dev/null)
+# so a silent text fallback is traceable on any machine. Always best-effort.
+dbg() { [ "$NOTIFY_DEBUG" = "1" ] && { printf '%s %s\n' "$(date '+%H:%M:%S')" "$1" >> "$HOME/.claude/notify-debug.log"; } 2>/dev/null; return 0; }
+
 # --- defaults (override in ~/.claude/notify.conf) ----------------------------
 NOTIFY_ENABLED=1
 
@@ -207,6 +212,20 @@ NOTIFY_TG_SUMMARY_MAX=600
 # back to the text message if either is missing). See hooks/render-reply.py.
 NOTIFY_TG_IMAGE=0
 NOTIFY_TG_IMAGE_WIDTH=760
+# Status accent colour for the rendered image (header bar / status dot / links /
+# list markers / quote rule): green for a finished turn, amber for "needs you", so
+# done vs wait reads at a glance. Any CSS colour string.
+NOTIFY_TG_IMAGE_ACCENT_DONE="#3fb950"
+NOTIFY_TG_IMAGE_ACCENT_WAIT="#d29922"
+# Rendered-image colour theme: "dark" (default) or "light".
+NOTIFY_TG_IMAGE_THEME=dark
+# Show a meta line (host · cwd · branch · time) under the header in the image. 1=on.
+NOTIFY_TG_IMAGE_META=1
+# Semantic colouring in the image: status symbols (✓✗⚠), inline-code status values
+# (true/false/rc=0…), a CN/EN keyword dictionary, and GitHub-style > [!WARNING]
+# alert cards — coloured by importance. 1=on. Symbols/code/alerts are objective
+# (no false hits); the keyword dictionary can occasionally mis-tag CN prose.
+NOTIFY_TG_IMAGE_SEMANTIC=1
 
 NOTIFY_FOCUS_MUTE=1
 NOTIFY_TERMINAL_APPS="Terminal iTerm2 Ghostty kitty WezTerm Alacritty Warp Code Hyper Tabby rio"
@@ -342,10 +361,12 @@ if [ "$state" = "done" ]; then
   glyph="$NOTIFY_GLYPH_DONE"; sound="$NOTIFY_SOUND_DONE"; title_text="$NOTIFY_LABEL_DONE"
   do_title="$NOTIFY_DONE_TITLE"; do_bell="$NOTIFY_DONE_BELL"; do_desktop="$NOTIFY_DONE_DESKTOP"
   do_sound="$NOTIFY_DONE_SOUND"; do_tg="$NOTIFY_DONE_TG"; tabcolor="$NOTIFY_DONE_TABCOLOR"
+  accent="$NOTIFY_TG_IMAGE_ACCENT_DONE"
 else
   glyph="$NOTIFY_GLYPH_WAIT"; sound="$NOTIFY_SOUND_WAIT"; title_text="$NOTIFY_LABEL_WAIT"
   do_title="$NOTIFY_WAIT_TITLE"; do_bell="$NOTIFY_WAIT_BELL"; do_desktop="$NOTIFY_WAIT_DESKTOP"
   do_sound="$NOTIFY_WAIT_SOUND"; do_tg="$NOTIFY_WAIT_TG"; tabcolor="$NOTIFY_WAIT_TABCOLOR"
+  accent="$NOTIFY_TG_IMAGE_ACCENT_WAIT"
 fi
 
 branch=$(git -C "$cwd" branch --show-current 2>/dev/null)
@@ -360,6 +381,17 @@ fi
 headline="$title_text · $label"
 body="$headline"; [ -n "$summary" ] && body="$headline"$'\n'"$summary"
 notif_line="$glyph $headline"; [ -n "$summary" ] && notif_line="$notif_line — $summary"
+
+# Meta line for the rendered image (host · cwd · branch · time) — lets you tell
+# machines / sessions apart at a glance. Only built when image+meta are on.
+img_meta=""
+if [ "$NOTIFY_TG_IMAGE" = "1" ] && [ "$NOTIFY_TG_IMAGE_META" = "1" ]; then
+  hl="$NOTIFY_TG_HOST_LABEL"; [ -z "$hl" ] && hl=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
+  disp_cwd="$cwd"; case "$disp_cwd" in "$HOME"/*) disp_cwd="~${disp_cwd#"$HOME"}" ;; "$HOME") disp_cwd="~" ;; esac
+  img_meta="$disp_cwd"; [ -n "$branch" ] && img_meta="$img_meta ⎇ $branch"
+  [ -n "$hl" ] && img_meta="$hl · $img_meta"
+  img_meta="$img_meta · $(date '+%Y-%m-%d %H:%M')"
+fi
 
 case "$OSTYPE" in
   darwin*|*bsd*) PLAT="mac" ;;
@@ -516,32 +548,59 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
     sent=0
     # Image mode: render the FULL reply to a PNG (no truncation, web-quality
     # layout) and send that, with the header as the caption. Needs python3 +
-    # headless Chrome; render-reply.py decides sendPhoto vs sendDocument and
-    # falls back here to the HTML text message on any failure.
+    # headless Chrome; render-reply.py decides sendPhoto vs sendDocument and falls
+    # back here to the HTML text message on any failure. Every step is logged under
+    # NOTIFY_DEBUG so a fallback is never silent again — including curl's exit code
+    # and stderr (the upload, not the render, is where this historically failed),
+    # and the response is checked for "ok":true so an API rejection is told apart
+    # from a network error.
     if [ "$NOTIFY_TG_IMAGE" = "1" ] && [ -n "$summary_raw" ] && command -v python3 >/dev/null 2>&1; then
+      dbg "img: mode on py=$(command -v python3) summary_len=${#summary_raw}"
       render=$(python3 -c "import os,sys;print(os.path.join(os.path.dirname(os.path.realpath(sys.argv[1])),'render-reply.py'))" "$0" 2>/dev/null)
       if [ -n "$render" ] && [ -f "$render" ]; then
         td=$(mktemp -d 2>/dev/null) || td=""
         if [ -n "$td" ]; then
-          res=$(printf '%s' "$summary_raw" | python3 "$render" --out "$td/reply.png" --header "$title_text · $label" 2>/dev/null)
+          res=$(printf '%s' "$summary_raw" | python3 "$render" --out "$td/reply.png" --header "$title_text · $label" ${accent:+--accent "$accent"} ${img_meta:+--meta "$img_meta"} --theme "$NOTIFY_TG_IMAGE_THEME" --semantic "$NOTIFY_TG_IMAGE_SEMANTIC" 2>"$td/render.err")
+          rc=$?
+          dbg "img: render rc=$rc res=[$res]"
+          [ "$NOTIFY_DEBUG" = "1" ] && [ -s "$td/render.err" ] && \
+            dbg "img: render stderr: $(tr '\n' ' ' < "$td/render.err" | cut -c1-400)"
           if [ -n "$res" ]; then
             TAB=$(printf '\t')
             kind=${res%%"$TAB"*}; img=${res#*"$TAB"}
             meth="sendPhoto"; field="photo"
             [ "$kind" = "document" ] && { meth="sendDocument"; field="document"; }
-            if [ -f "$img" ] && curl -fsS -m 60 "${api}/${meth}" \
-                 -F "chat_id=${NOTIFY_TG_CHAT_ID}" \
-                 ${thread:+-F "message_thread_id=${thread}"} \
-                 -F "${field}=@${img}" \
-                 -F "parse_mode=HTML" \
-                 -F "caption=${tg_caption}" \
-                 -F "disable_notification=${dn}" >/dev/null 2>&1; then
-              sent=1
+            if [ -f "$img" ]; then
+              # curl -F interprets a value starting with '<' as "read the field from
+              # this file" (and '@' as "attach this file"). tg_caption is HTML that
+              # begins with '<b>', so -F tried to open a file named after the caption
+              # and failed with exit 26 — the real reason image mode fell back to
+              # text. Send every LITERAL field with --form-string (verbatim, no '<'/
+              # '@' magic); only the image stays an -F file upload.
+              resp=$(curl -sS -m 60 "${api}/${meth}" \
+                   --form-string "chat_id=${NOTIFY_TG_CHAT_ID}" \
+                   ${thread:+--form-string "message_thread_id=${thread}"} \
+                   -F "${field}=@${img}" \
+                   --form-string "parse_mode=HTML" \
+                   --form-string "caption=${tg_caption}" \
+                   --form-string "disable_notification=${dn}" 2>"$td/curl.err")
+              crc=$?
+              if printf '%s' "$resp" | grep -q '"ok":true'; then
+                sent=1; dbg "img: $meth ok"
+              else
+                dbg "img: $meth failed crc=$crc size=$(wc -c <"$img" 2>/dev/null | tr -d ' ') resp=[$(printf '%s' "$resp" | tr '\n' ' ' | cut -c1-200)] stderr=[$(tr '\n' ' ' <"$td/curl.err" | cut -c1-200)]"
+              fi
+            else
+              dbg "img: rendered file missing ($img)"
             fi
           fi
           rm -rf "$td"
         fi
+      else
+        dbg "img: render-reply.py not found (render=$render)"
       fi
+    elif [ "$NOTIFY_TG_IMAGE" = "1" ]; then
+      dbg "img: skipped (summary_len=${#summary_raw} python3=$(command -v python3 2>/dev/null || echo none))"
     fi
 
     if [ "$sent" = "0" ]; then
@@ -565,9 +624,10 @@ fi
 
 # --- diagnostics -------------------------------------------------------------
 if [ "$NOTIFY_DEBUG" = "1" ]; then
-  { printf '%s event=%s state=%s iterm=%s tty=%s tty_ok=%s tabcolor_done=%s desktop_done=%s muted=%s\n' \
+  { printf '%s event=%s state=%s iterm=%s tty=%s tty_ok=%s tabcolor_done=%s desktop_done=%s muted=%s tg_image=%s python3=%s\n' \
       "$(date '+%H:%M:%S')" "$event" "$state" "$IS_ITERM" "$TTYDEV" "$tty_ok" \
-      "$tabcolor_done" "$desktop_done" "$muted" \
+      "$tabcolor_done" "$desktop_done" "$muted" "$NOTIFY_TG_IMAGE" \
+      "$(command -v python3 2>/dev/null || echo none)" \
       >> "$HOME/.claude/notify-debug.log"; } 2>/dev/null
 fi
 
