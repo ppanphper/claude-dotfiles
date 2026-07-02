@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Claude Code statusline:
 # model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch
-#   | ctx: in/total (X%) | free: 5h X% (reset) 🔥$A 💰~$R / 7d Y% (reset) 🔥$B 💰~$S
-# (🔥 = spent this window, 💰~ = estimated money left, see section 6.5)
+#   | ctx: in/total (X%) | free: 5h X% (reset) 🔥~$A 💰~$R / 7d Y% (reset) 🔥~$B 💰~$S
+# (🔥~ = est. spent this window, 💰~ = est. money left; both reset with the
+#  official window — derived from used%, not raw ccusage spend, see section 6.5)
 # <full current path in dim gray>
 #
 # Columns are greedily wrapped across as many rows as needed to fit the
@@ -220,20 +221,26 @@ if [ -n "$COST_RUN" ]; then
   [ -f "$COST_CACHE" ] && read -r c5 c7 < "$COST_CACHE" 2>/dev/null
 fi
 
-# 6.5 Money left, inferred. Anthropic exposes no $ (or token) quota for
-# subscriptions — only used_percentage — so remaining money is split into a
-# FRACTION and a SCALE with very different trust levels:
-#   left ≈ budget * (100 - used%) / 100
-# The fraction comes straight from the official used%, so hitting $0 coincides
-# exactly with the official 100%, and a quota reset (used% -> 0) snaps the
-# figure back to the full budget by construction. Only the SCALE — the implied
-# full-window budget in ccusage-dollars — is estimated: whenever used% >= 10,
-# sample spent*100/used% and fold it in with an EMA whose weight grows with
-# used% (a big divisor amplifies noise less, so high-used% samples are worth
-# more). The budget persists in ~/.claude/.quota_budget ACROSS windows and
-# re-learns after an official quota change. Do NOT "simplify" this back to
-# budget - spent: that subtracts two loosely-correlated estimates (cache-token
-# weighting makes ccusage-$ and used% diverge) and doubles the error.
+# 6.5 Money used/left, inferred. Anthropic exposes no $ (or token) quota for
+# subscriptions — only used_percentage — and ccusage can't measure spend over
+# the official window either (its blocks are activity-anchored, misaligned with
+# resets_at; --since is only day-granular). So BOTH displayed figures are split
+# into a FRACTION and a SCALE with very different trust levels:
+#   used ≈ budget * used% / 100      left ≈ budget * (100 - used%) / 100
+# The fraction comes straight from the official used%, so used hits budget and
+# left hits $0 exactly at the official 100%, and a quota reset (used% -> 0)
+# snaps used back to $0 / left back to the full budget by construction — which
+# is why we DON'T display raw ccusage spend for "used": that figure lags the
+# window and never resets. Only the SCALE — the implied full-window budget in
+# ccusage-dollars — is estimated: whenever used% >= 10, sample spent*100/used%
+# and fold it in with an EMA whose weight grows with used% (a big divisor
+# amplifies noise less, so high-used% samples are worth more). ccusage spend is
+# the learning anchor only. The budget persists in ~/.claude/.quota_budget
+# ACROSS windows and re-learns after an official quota change. Do NOT "simplify"
+# used to raw spend or left to budget-spent: raw spend is window-misaligned, and
+# budget-spent subtracts two loosely-correlated estimates (cache-token weighting
+# makes ccusage-$ and used% diverge). Before a budget is learned, "used" falls
+# back to raw ccusage spend (best effort) and "left" is omitted.
 # "0" in the cache file is a placeholder for "not learned yet", not a value.
 BUDGET_CACHE="$HOME/.claude/.quota_budget"
 bud5=""; bud7=""
@@ -260,8 +267,14 @@ est_remaining() {  # $1=budget $2=used_pct -> budget*(100-pct)/100, "" if no bud
   awk -v b="$1" -v p="$2" 'BEGIN{ r = b*(100-p)/100; if (r < 0) r = 0; printf "%.4f", r }'
 }
 
-# 7. Quota remaining (100 - used_percentage) + reset countdown, with spend
-# and estimated money left ("~$" = inferred, not an official figure) appended.
+est_used() {  # $1=budget $2=used_pct -> budget*pct/100, "" if no budget
+  [ -n "$1" ] || return
+  awk -v b="$1" -v p="$2" 'BEGIN{ u = b*p/100; if (u < 0) u = 0; printf "%.4f", u }'
+}
+
+# 7. Quota remaining (100 - used_percentage) + reset countdown, with estimated
+# money used/left ("~$" = inferred, not official; both derived from used% so
+# they reset with the window — see section 6.5) appended.
 # (rate_limits fields parsed above section 6 — refresh_costs needs week_reset.)
 if [ -n "$five_pct" ] || [ -n "$week_pct" ]; then
   now=$(date +%s)
@@ -271,22 +284,28 @@ if [ -n "$five_pct" ] || [ -n "$week_pct" ]; then
   if [ -n "$five_pct" ]; then
     five_str=$(awk -v p="$five_pct" 'BEGIN{printf "%.0f%%", 100-p}')
     [ -n "$five_reset" ] && five_str="${five_str} ($(fmt_dur $((five_reset - now))))"
-    if [ -n "$c5" ]; then
-      five_str="${five_str} 🔥${MONEY}$(fmt_money "$c5")${MAGENTA}"
-      nbud5=$(learn_budget "$c5" "$five_pct" "$bud5")
-    fi
+    # Learn the budget scale from raw ccusage spend, but DISPLAY used/left both
+    # derived from the official used% so they track (and reset with) the window.
+    [ -n "$c5" ] && nbud5=$(learn_budget "$c5" "$five_pct" "$bud5")
+    use5=$(est_used "$nbud5" "$five_pct")
     rem5=$(est_remaining "$nbud5" "$five_pct")
-    [ -n "$rem5" ] && five_str="${five_str} 💰${DIM}~$(fmt_money "$rem5")${RESET}${MAGENTA}"
+    if [ -n "$use5" ]; then
+      five_str="${five_str} 🔥${MONEY}~$(fmt_money "$use5")${MAGENTA} 💰${DIM}~$(fmt_money "$rem5")${RESET}${MAGENTA}"
+    elif [ -n "$c5" ]; then
+      five_str="${five_str} 🔥${MONEY}$(fmt_money "$c5")${MAGENTA}"   # no budget yet: raw spend
+    fi
   fi
   if [ -n "$week_pct" ]; then
     week_str=$(awk -v p="$week_pct" 'BEGIN{printf "%.0f%%", 100-p}')
     [ -n "$week_reset" ] && week_str="${week_str} ($(fmt_dur $((week_reset - now))))"
-    if [ -n "$c7" ]; then
-      week_str="${week_str} 🔥${MONEY}$(fmt_money "$c7")${MAGENTA}"
-      nbud7=$(learn_budget "$c7" "$week_pct" "$bud7")
-    fi
+    [ -n "$c7" ] && nbud7=$(learn_budget "$c7" "$week_pct" "$bud7")
+    use7=$(est_used "$nbud7" "$week_pct")
     rem7=$(est_remaining "$nbud7" "$week_pct")
-    [ -n "$rem7" ] && week_str="${week_str} 💰${DIM}~$(fmt_money "$rem7")${RESET}${MAGENTA}"
+    if [ -n "$use7" ]; then
+      week_str="${week_str} 🔥${MONEY}~$(fmt_money "$use7")${MAGENTA} 💰${DIM}~$(fmt_money "$rem7")${RESET}${MAGENTA}"
+    elif [ -n "$c7" ]; then
+      week_str="${week_str} 🔥${MONEY}$(fmt_money "$c7")${MAGENTA}"
+    fi
   fi
   quota_str="free: 5h ${five_str} / 7d ${week_str}"
   if [ "$nbud5" != "$bud5" ] || [ "$nbud7" != "$bud7" ]; then
