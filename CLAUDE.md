@@ -169,6 +169,33 @@ Cost figures (`$A`/`$B`) are **not** in the statusline JSON — they come from
 out to a runner (`ccusage` binary → `bunx` → `npx`, first found wins), caches
 the result in `~/.claude/.cost_cache` for 30s, and refreshes in the background
 behind a `mkdir` lock (`~/.claude/.cost_cache.lock`) so renders stay instant.
+The 7d sum is aligned to the **official quota window** (`seven_day.resets_at`
+− 7d, day-granular) rather than the last 7 calendar days, so it drops back to
+~0 when the weekly quota resets — that's why the rate-limit fields are parsed
+*above* section 6.
+
+The two money figures are marked with emoji — `🔥$A` (spent, green) and
+`💰~$R` (estimated remaining, dim). Both fall in the perl measurer's emoji
+ranges already; the bash width fallback's emoji strip-list must include them
+(keep that in sync when changing the icons).
+
+The estimated money left is **inferred, not official** — Anthropic exposes
+no $ or token quota for subscriptions, only `used_percentage`, and adjusts
+limits over time, so nothing is hardcoded. The estimator splits remaining
+into a **fraction** (official, exact) and a **scale** (learned):
+`left ≈ budget * (100 − used%) / 100`. Anchoring the fraction on the
+official percentage makes the dynamics exact by construction — `left` hits
+$0 at exactly the official 100%, and snaps back to the full budget at a
+quota reset (`used%` → 0) — leaving only the budget's dollar scale as an
+estimate. The budget (implied full-window total in ccusage-dollars) is
+learned into `~/.claude/.quota_budget` (`bud5 bud7`, `0` = not learned yet):
+whenever `used% >= 10`, `spent*100/used%` is sampled and EMA-folded with a
+weight that grows with `used%` (bigger divisor → less noise amplification).
+It persists across window resets and re-learns after an official quota
+change. Do **not** "simplify" the formula back to `budget − spent`: that
+subtracts two loosely-correlated estimates (cache-token weighting makes
+ccusage-$ and used% diverge) and roughly doubles the error. With no learned
+budget yet, `left` is simply omitted.
 
 ## Testing changes manually
 
