@@ -58,7 +58,7 @@ on one row. Display widths account for ANSI colors (zero width) and CJK/emoji
 | `project[/subdir]`           | `.workspace.project_dir` + `.workspace.current_dir`                                                       | If you `cd` into a subdirectory of the project, shows `project/relative/path`.                                                     |
 | `🌿 branch [⎇ worktree]`     | `git branch --show-current` + `.workspace.git_worktree`                                                   | Hidden in non-git directories. The `⎇ worktree` suffix appears only when the current directory is inside a linked git worktree.   |
 | `ctx: in/total (X%)`         | `.context_window.total_input_tokens` / `.context_window_size` / `.context_window.used_percentage`         | Shows absolute token counts plus percent. Falls back to `ctx: n/a` before the first API response.                                  |
-| `free: 5h X% (Δ) $A / 7d Y% (Δ) $B` | `100 − .rate_limits.*.used_percentage` (+ `resets_at`); `$` amounts from [`ccusage`](https://github.com/ryoppippi/ccusage) | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows, with time until each resets in parentheses (`2h15m`, `3d4h`, `now`) and the spend so far in that window appended in green. The dollar figures come from `ccusage` (the statusline JSON carries no cost data): `$A` is the active 5-hour billing block, `$B` is the last 7 days. They're cached for 30s and refreshed in the background, so renders stay instant. Quota %/countdown need Pro/Max after the first response (`n/a` for API-key users); the `$` amounts need a JS runtime to run `ccusage` — a global `ccusage` binary, `bunx` (bun), or `npx` (node), whichever is found — and are simply omitted if none is available. |
+| `free: 5h X% (Δ) / 7d Y% (Δ)` | `100 − .rate_limits.*.used_percentage` (+ `resets_at`)                                                    | Remaining percentage of Claude.ai's 5-hour and 7-day rate-limit windows, with time until each resets in parentheses (`2h15m`, `3d4h`, `now`). These are the official account-level figures, so they're accurate even when you use the same subscription from several machines. Needs Pro/Max after the first response (`n/a` for API-key users). |
 
 ### Worktree auto-tracking
 
@@ -272,12 +272,7 @@ The installer:
    to `settings.json.bak.<timestamp>` before any change is written, and the
    new file is written atomically via `mktemp` + `mv`. Re-running the
    installer is idempotent — no duplicate entries are added.
-6. Checks for a ccusage runner (`ccusage`, `bunx`, or `npx`) that powers the
-   `$` spend figures. `npx` ships with Node.js, which most machines already
-   have, so this usually just passes. If none is found it prints how to enable
-   the figures and continues — pass `INSTALL_BUN=1` to also auto-install `bun`
-   (the figures stay hidden meanwhile; everything else works).
-7. **When run in a terminal** (not piped), offers a guided Telegram setup:
+6. **When run in a terminal** (not piped), offers a guided Telegram setup:
    validates your bot token, auto-detects the chat id, writes the push config to
    `notify.conf`, and — if you opt into two-way replies — installs the official
    Telegram plugin, installs `bun` if needed, writes its token + an `access.json`
@@ -300,12 +295,6 @@ CLAUDE_DOTFILES_DIR=~/dev/claude-dotfiles \
 
 # Skip the jq auto-install (you'll install it manually)
 SKIP_JQ_INSTALL=1 \
-  curl -fsSL https://raw.githubusercontent.com/ppanphper/claude-dotfiles/main/install.sh | bash
-
-# Auto-install bun when no ccusage runner (ccusage/bunx/npx) is found, so the
-# $ spend figures work out of the box (by default the installer only warns;
-# Node.js is on most machines already, so npx usually covers it)
-INSTALL_BUN=1 \
   curl -fsSL https://raw.githubusercontent.com/ppanphper/claude-dotfiles/main/install.sh | bash
 ```
 
@@ -381,15 +370,6 @@ rm -rf ~/claude-dotfiles
 - `jq` — used both by `install.sh` to merge `settings.json` safely and by
   `statusline.sh` itself to parse the JSON Claude Code pipes to it on every
   refresh. Auto-installed by `install.sh` unless `SKIP_JQ_INSTALL=1`.
-- [`ccusage`](https://github.com/ryoppippi/ccusage) + a JS runtime — _optional_,
-  only for the `$` spend figures appended to the `free` column. The status line
-  uses the first of these it finds on your `PATH`: a globally-installed
-  `ccusage` binary, `bunx` (bun), or `npx` (node); the latter two fetch
-  `ccusage` on demand. It always runs with cached pricing (`--offline`, no
-  network). If none of the three is available, the spend figures are silently
-  omitted and everything else keeps working. Since `npx` ships with Node.js
-  (already on most machines), `install.sh` doesn't install a runtime by default
-  — pass `INSTALL_BUN=1` to auto-install `bun` if no runner is found.
 - Desktop-notification / sound tools — _optional_, only for those notification
   channels. macOS desktop popups use `terminal-notifier` (else the built-in
   `osascript`); Linux uses `notify-send`. Sounds use `afplay` (macOS) or

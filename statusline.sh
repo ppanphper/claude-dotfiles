@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code statusline:
 # model [effort] 💭 | 🤖 agent | project[/subdir] | 🌿 branch
-#   | ctx: in/total (X%) | free: 5h X% (reset) 🔥~$A 💰~$R / 7d Y% (reset) 🔥~$B 💰~$S
-# (🔥~ = est. spent this window, 💰~ = est. money left; both reset with the
-#  official window — derived from used%, not raw ccusage spend, see section 6.5)
+#   | ctx: in/total (X%) | free: 5h X% (reset) / 7d Y% (reset)
 # <full current path in dim gray>
 #
 # Columns are greedily wrapped across as many rows as needed to fit the
@@ -23,7 +21,6 @@ GREEN=$'\033[32m'
 MAGENTA=$'\033[35m'
 BLUE=$'\033[34m'
 RED=$'\033[31m'
-MONEY=$'\033[92m'
 
 fmt_tokens() {
   awk -v n="$1" 'BEGIN {
@@ -48,14 +45,6 @@ fmt_dur() {
     if (d > 0)      printf "%dd%dh", d, h
     else if (h > 0) printf "%dh%dm", h, m
     else            printf "%dm", m
-  }'
-}
-
-fmt_money() {
-  awk -v n="$1" 'BEGIN {
-    n = n + 0
-    if (n >= 100) printf "$%.0f", n
-    else          printf "$%.2f", n
   }'
 }
 
@@ -130,190 +119,25 @@ else
   ctx_str="ctx: n/a"
 fi
 
-# Rate-limit fields, parsed early: refresh_costs (below) aligns its 7-day
-# window to the official one via week_reset; section 7 renders all four.
+# 6. Quota remaining (100 - used_percentage) + reset countdown, straight from
+# the official rate_limits fields — account-level, so consistent across machines.
 five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 week_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
 week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
-
-# 6. Cost figures: spend in the current 5-hour block + current 7-day quota
-# window, via ccusage aggregating ~/.claude/projects/**/*.jsonl (not in the
-# statusline JSON). Cache (TTL 30s) and refresh in the background so renders
-# stay snappy. These get appended onto the matching 5h / 7d quota parts below.
-c5=""; c7=""
-COST_CACHE="$HOME/.claude/.cost_cache"
-COST_LOCK="$HOME/.claude/.cost_cache.lock"
-COST_TTL=30
-
-# Pick a runner for ccusage. A globally-installed `ccusage` binary is fastest;
-# otherwise fall back to `bunx` (bun) or `npx` (node), which fetch it on demand.
-# Whichever exists wins; with none of them the spend figures are just omitted.
-COST_RUN=""
-if command -v ccusage >/dev/null 2>&1; then
-  COST_RUN="ccusage"
-elif command -v bunx >/dev/null 2>&1; then
-  COST_RUN="bunx ccusage"
-elif command -v npx >/dev/null 2>&1; then
-  COST_RUN="npx --yes ccusage"
-fi
-
-# Pick the platform's date/stat forms ONCE, from bash's built-in $OSTYPE — set
-# at shell startup, so this runs no probe command at all, just a string match.
-# The chosen helpers carry no fallback, so nothing is re-detected per call.
-# macOS/BSD use `date -v` / `stat -f`; GNU/Linux use `date -d` / `stat -c`.
-case "$OSTYPE" in
-  darwin*|*bsd*)
-    mtime()          { stat -f %m "$1" 2>/dev/null || echo 0; }
-    date_days_ago()  { date -v-"$1"d +%Y%m%d; }
-    date_of_epoch()  { date -r "$1" +%Y%m%d 2>/dev/null; }
-    ;;
-  *)
-    mtime()          { stat -c %Y "$1" 2>/dev/null || echo 0; }
-    date_days_ago()  { date -d "$1 days ago" +%Y%m%d; }
-    date_of_epoch()  { date -d "@$1" +%Y%m%d 2>/dev/null; }
-    ;;
-esac
-
-refresh_costs() {
-  local since b5 d7 tmp
-  # Align the 7d sum to the official rolling window (resets_at - 7d) when
-  # known, so it drops back to ~0 when the quota resets; otherwise fall back
-  # to the last 7 calendar days. ccusage daily is day-granular, so the start
-  # is approximate by up to a day — the figure is an estimate either way.
-  since=""
-  case "$week_reset" in
-    *[!0-9]*|"") ;;
-    *) since=$(date_of_epoch $((week_reset - 7*86400))) ;;
-  esac
-  [ -n "$since" ] || since=$(date_days_ago 6)
-  b5=$($COST_RUN blocks --active --json --offline 2>/dev/null \
-       | jq -r '[.blocks[]?|select(.isActive)|.costUSD]|add // empty')
-  d7=$($COST_RUN daily --json --offline --since "$since" 2>/dev/null \
-       | jq -r '.totals.totalCost // empty')
-  if [ -n "${b5}${d7}" ]; then
-    tmp=$(mktemp "${COST_CACHE}.XXXXXX") || return
-    printf '%s %s\n' "${b5:-0}" "${d7:-0}" > "$tmp"
-    mv -f "$tmp" "$COST_CACHE"
-  fi
-}
-if [ -n "$COST_RUN" ]; then
-  cnow=$(date +%s)
-  stale=1
-  if [ -f "$COST_CACHE" ]; then
-    age=$(( cnow - $(mtime "$COST_CACHE") ))
-    [ "$age" -lt "$COST_TTL" ] && stale=0
-  fi
-  if [ "$stale" = 1 ]; then
-    # Clear a lock left behind by a crashed refresh.
-    if [ -d "$COST_LOCK" ]; then
-      lage=$(( cnow - $(mtime "$COST_LOCK") ))
-      [ "$lage" -gt 120 ] && rmdir "$COST_LOCK" 2>/dev/null
-    fi
-    if mkdir "$COST_LOCK" 2>/dev/null; then
-      if [ -f "$COST_CACHE" ]; then
-        ( refresh_costs; rmdir "$COST_LOCK" 2>/dev/null ) >/dev/null 2>&1 &
-      else
-        refresh_costs; rmdir "$COST_LOCK" 2>/dev/null   # first run: compute now
-      fi
-    fi
-  fi
-  [ -f "$COST_CACHE" ] && read -r c5 c7 < "$COST_CACHE" 2>/dev/null
-fi
-
-# 6.5 Money used/left, inferred. Anthropic exposes no $ (or token) quota for
-# subscriptions — only used_percentage — and ccusage can't measure spend over
-# the official window either (its blocks are activity-anchored, misaligned with
-# resets_at; --since is only day-granular). So BOTH displayed figures are split
-# into a FRACTION and a SCALE with very different trust levels:
-#   used ≈ budget * used% / 100      left ≈ budget * (100 - used%) / 100
-# The fraction comes straight from the official used%, so used hits budget and
-# left hits $0 exactly at the official 100%, and a quota reset (used% -> 0)
-# snaps used back to $0 / left back to the full budget by construction — which
-# is why we DON'T display raw ccusage spend for "used": that figure lags the
-# window and never resets. Only the SCALE — the implied full-window budget in
-# ccusage-dollars — is estimated: whenever used% >= 10, sample spent*100/used%
-# and fold it in with an EMA whose weight grows with used% (a big divisor
-# amplifies noise less, so high-used% samples are worth more). ccusage spend is
-# the learning anchor only. The budget persists in ~/.claude/.quota_budget
-# ACROSS windows and re-learns after an official quota change. Do NOT "simplify"
-# used to raw spend or left to budget-spent: raw spend is window-misaligned, and
-# budget-spent subtracts two loosely-correlated estimates (cache-token weighting
-# makes ccusage-$ and used% diverge). Before a budget is learned, "used" falls
-# back to raw ccusage spend (best effort) and "left" is omitted.
-# "0" in the cache file is a placeholder for "not learned yet", not a value.
-BUDGET_CACHE="$HOME/.claude/.quota_budget"
-bud5=""; bud7=""
-[ -f "$BUDGET_CACHE" ] && read -r bud5 bud7 < "$BUDGET_CACHE" 2>/dev/null
-
-learn_budget() {  # $1=spent $2=used_pct $3=old_budget -> new budget, "" if unknowable
-  awk -v s="$1" -v p="$2" -v o="$3" 'BEGIN{
-    known = (o != "" && o+0 > 0)
-    if (s+0 > 0 && p+0 >= 10) {
-      smp = s*100/p
-      if (known) {
-        a = 0.3 * (p >= 50 ? 1 : p/50)              # trust high-used% samples more
-        b = (1-a)*o + a*smp
-      } else b = smp
-      if (b-smp < 0.005 && smp-b < 0.005) b = smp   # snap when converged: no cache churn
-    } else if (known) b = o
-    else exit
-    printf "%.4f", b
-  }'
-}
-
-est_remaining() {  # $1=budget $2=used_pct -> budget*(100-pct)/100, "" if no budget
-  [ -n "$1" ] || return
-  awk -v b="$1" -v p="$2" 'BEGIN{ r = b*(100-p)/100; if (r < 0) r = 0; printf "%.4f", r }'
-}
-
-est_used() {  # $1=budget $2=used_pct -> budget*pct/100, "" if no budget
-  [ -n "$1" ] || return
-  awk -v b="$1" -v p="$2" 'BEGIN{ u = b*p/100; if (u < 0) u = 0; printf "%.4f", u }'
-}
-
-# 7. Quota remaining (100 - used_percentage) + reset countdown, with estimated
-# money used/left ("~$" = inferred, not official; both derived from used% so
-# they reset with the window — see section 6.5) appended.
-# (rate_limits fields parsed above section 6 — refresh_costs needs week_reset.)
 if [ -n "$five_pct" ] || [ -n "$week_pct" ]; then
   now=$(date +%s)
   five_str="n/a"
   week_str="n/a"
-  nbud5="$bud5"; nbud7="$bud7"
   if [ -n "$five_pct" ]; then
     five_str=$(awk -v p="$five_pct" 'BEGIN{printf "%.0f%%", 100-p}')
     [ -n "$five_reset" ] && five_str="${five_str} ($(fmt_dur $((five_reset - now))))"
-    # Learn the budget scale from raw ccusage spend, but DISPLAY used/left both
-    # derived from the official used% so they track (and reset with) the window.
-    [ -n "$c5" ] && nbud5=$(learn_budget "$c5" "$five_pct" "$bud5")
-    use5=$(est_used "$nbud5" "$five_pct")
-    rem5=$(est_remaining "$nbud5" "$five_pct")
-    if [ -n "$use5" ]; then
-      five_str="${five_str} 🔥${MONEY}~$(fmt_money "$use5")${MAGENTA} 💰${DIM}~$(fmt_money "$rem5")${RESET}${MAGENTA}"
-    elif [ -n "$c5" ]; then
-      five_str="${five_str} 🔥${MONEY}$(fmt_money "$c5")${MAGENTA}"   # no budget yet: raw spend
-    fi
   fi
   if [ -n "$week_pct" ]; then
     week_str=$(awk -v p="$week_pct" 'BEGIN{printf "%.0f%%", 100-p}')
     [ -n "$week_reset" ] && week_str="${week_str} ($(fmt_dur $((week_reset - now))))"
-    [ -n "$c7" ] && nbud7=$(learn_budget "$c7" "$week_pct" "$bud7")
-    use7=$(est_used "$nbud7" "$week_pct")
-    rem7=$(est_remaining "$nbud7" "$week_pct")
-    if [ -n "$use7" ]; then
-      week_str="${week_str} 🔥${MONEY}~$(fmt_money "$use7")${MAGENTA} 💰${DIM}~$(fmt_money "$rem7")${RESET}${MAGENTA}"
-    elif [ -n "$c7" ]; then
-      week_str="${week_str} 🔥${MONEY}$(fmt_money "$c7")${MAGENTA}"
-    fi
   fi
   quota_str="free: 5h ${five_str} / 7d ${week_str}"
-  if [ "$nbud5" != "$bud5" ] || [ "$nbud7" != "$bud7" ]; then
-    if tmp=$(mktemp "${BUDGET_CACHE}.XXXXXX" 2>/dev/null); then
-      printf '%s %s\n' "${nbud5:-0}" "${nbud7:-0}" > "$tmp"
-      mv -f "$tmp" "$BUDGET_CACHE"
-    fi
-  fi
 else
   quota_str="free: n/a"
 fi
@@ -368,7 +192,7 @@ if [ "$cols" -gt 0 ]; then
     shopt -s extglob 2>/dev/null
     for p in "${parts[@]}"; do
       s="${p//$'\e'\[*([0-9;?])[a-zA-Z]/}"           # strip ANSI escapes
-      t="${s//🤖/}"; t="${t//🌿/}"; t="${t//💭/}"; t="${t//🔥/}"; t="${t//💰/}"
+      t="${s//🤖/}"; t="${t//🌿/}"; t="${t//💭/}"
       widths+=( $(( ${#s} + ${#s} - ${#t} )) )       # +1 cell per wide emoji
     done
   fi
