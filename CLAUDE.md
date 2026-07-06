@@ -164,42 +164,17 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
 When adding a channel or event, keep the always-`exit 0`,
 auto-skip-if-tool/config-missing discipline the other scripts follow.
 
-Cost figures (`$A`/`$B`) are **not** in the statusline JSON — they come from
-`ccusage` aggregating `~/.claude/projects/**/*.jsonl`. `statusline.sh` shells
-out to a runner (`ccusage` binary → `bunx` → `npx`, first found wins), caches
-the result in `~/.claude/.cost_cache` for 30s, and refreshes in the background
-behind a `mkdir` lock (`~/.claude/.cost_cache.lock`) so renders stay instant.
-The 7d sum is aligned to the **official quota window** (`seven_day.resets_at`
-− 7d, day-granular) rather than the last 7 calendar days, so it drops back to
-~0 when the weekly quota resets — that's why the rate-limit fields are parsed
-*above* section 6.
-
-Both money figures are marked with emoji — `🔥~$A` (est. spent this window,
-green) and `💰~$R` (est. money left, dim). Both fall in the perl measurer's
-emoji ranges already; the bash width fallback's emoji strip-list must include
-them (keep that in sync when changing the icons).
-
-Both figures are **inferred, not official** — Anthropic exposes no $ or token
-quota for subscriptions (only `used_percentage`) and adjusts limits over time,
-*and* ccusage can't measure spend over the official window (its blocks are
-activity-anchored, misaligned with `resets_at`; `--since` is day-granular). So
-**both** displayed figures are split into a **fraction** (official, exact) and
-a **scale** (learned):
-`used ≈ budget * used% / 100` and `left ≈ budget * (100 − used%) / 100`.
-Anchoring the fraction on the official percentage makes the dynamics exact by
-construction — at a quota reset (`used%` → 0) `used` snaps to `$0` and `left`
-to the full budget. **This is why "used" is NOT the raw ccusage spend**: that
-figure is window-misaligned and never resets (the reported bug). ccusage spend
-is the *learning anchor only*: the budget (implied full-window total in
-ccusage-dollars) is learned into `~/.claude/.quota_budget` (`bud5 bud7`,
-`0` = not learned yet) — whenever `used% >= 10`, `spent*100/used%` is sampled
-and EMA-folded with a weight that grows with `used%` (bigger divisor → less
-noise amplification). It persists across resets and re-learns after an official
-quota change. Do **not** "simplify" `used` back to raw spend or `left` to
-`budget − spent`: raw spend never resets, and `budget − spent` subtracts two
-loosely-correlated estimates (cache-token weighting diverges ccusage-$ from
-used%). Before a budget is learned, `used` falls back to raw ccusage spend
-(best effort) and `left` is omitted.
+The quota column shows only the **official** `rate_limits` percentages and
+reset countdowns. Estimated money figures (🔥 spent / 💰 left, backed by
+`ccusage` + a learned per-window budget) used to be appended here but were
+**removed on purpose**: ccusage only sees this machine's
+`~/.claude/projects/**/*.jsonl`, so on a subscription used from more than one
+machine the learned scale shrank to that machine's share and the $ amounts
+were systematically wrong. Don't re-add a ccusage-derived money estimate
+without solving the multi-machine problem (e.g. a manually pinned budget);
+the official `used_percentage` is account-level and needs no local data.
+`install.sh` cleans up the feature's old state files (`~/.claude/.cost_cache`,
+`.cost_cache.lock`, `.quota_budget`) on upgrade.
 
 ## Testing changes manually
 
@@ -251,8 +226,8 @@ shellcheck statusline.sh hooks/worktree-tracker.sh install.sh   # if installed
   branching keys off `$OSTYPE` (no probe commands): BSD uses `date -v` / `stat -f`,
   GNU uses `date -d` / `stat -c`. Keep both arms when touching date/stat logic.
 - **Graceful degradation, never hard-fail.** Every optional input is guarded —
-  missing `ctx`/quota fields render `n/a`, a missing ccusage runner just omits
-  the `$` figures, a missing `perl` falls back to a bash width approximation.
+  missing `ctx`/quota fields render `n/a`, a missing `perl` falls back to a
+  bash width approximation.
   A render must never error or block. The hook always `exit 0`s; on any
   unparseable/unsafe input it silently no-ops and lets the JSON's `current_dir`
   stand.
