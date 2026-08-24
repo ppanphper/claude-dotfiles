@@ -30,12 +30,61 @@ CONF = Path(os.environ.get("CLAUDE_NOTIFY_CONF", str(CLAUDE_DIR / "notify.conf")
 OFFSET_FILE = CLAUDE_DIR / ".tg_reply_offset"
 LOCK_FILE = CLAUDE_DIR / ".tg_reply_gateway.lock"
 LOG_FILE = CLAUDE_DIR / "telegram-reply.log"
+LOG_LOCK_FILE = CLAUDE_DIR / ".tg_reply_log.lock"
+DEFAULT_LOG_MAX_MB = 100
+DEFAULT_LOG_BACKUPS = 3
+
+
+def int_setting(value: str, default: int, minimum: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed >= minimum else default
+    except (TypeError, ValueError):
+        return default
+
+
+def rotate_log_if_needed(incoming_bytes: int, max_bytes: int, backups: int) -> None:
+    try:
+        current_size = LOG_FILE.stat().st_size
+    except OSError:
+        current_size = 0
+    if current_size + incoming_bytes <= max_bytes:
+        return
+
+    if backups <= 0:
+        try:
+            LOG_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return
+
+    oldest = Path(f"{LOG_FILE}.{backups}")
+    try:
+        oldest.unlink()
+    except FileNotFoundError:
+        pass
+    for index in range(backups - 1, 0, -1):
+        source = Path(f"{LOG_FILE}.{index}")
+        if source.exists():
+            os.replace(source, Path(f"{LOG_FILE}.{index + 1}"))
+    if LOG_FILE.exists():
+        os.replace(LOG_FILE, Path(f"{LOG_FILE}.1"))
 
 
 def log(message: str) -> None:
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n"
     try:
-        with LOG_FILE.open("a", encoding="utf-8") as stream:
-            stream.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+        config = read_conf()
+        max_mb = int_setting(config.get("NOTIFY_TG_REPLY_LOG_MAX_MB", ""),
+                             DEFAULT_LOG_MAX_MB, 1)
+        backups = int_setting(config.get("NOTIFY_TG_REPLY_LOG_BACKUPS", ""),
+                              DEFAULT_LOG_BACKUPS, 0)
+        with LOG_LOCK_FILE.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            rotate_log_if_needed(len(line.encode("utf-8")),
+                                 max_mb * 1024 * 1024, backups)
+            with LOG_FILE.open("a", encoding="utf-8") as stream:
+                stream.write(line)
     except OSError:
         pass
 

@@ -277,6 +277,11 @@ tail -f ~/.claude/telegram-reply.log
 `--check` calls only `getMe` and `getWebhookInfo`; it never calls `getUpdates`,
 so it cannot consume or disturb pending replies.
 
+The gateway rotates `~/.claude/telegram-reply.log` before a write would exceed
+100 MB and keeps three history files (`.1`, `.2`, `.3`). Override the defaults in
+`notify.conf` with `NOTIFY_TG_REPLY_LOG_MAX_MB` and
+`NOTIFY_TG_REPLY_LOG_BACKUPS` (`0` keeps no history).
+
 ## Install
 
 ### One-line install

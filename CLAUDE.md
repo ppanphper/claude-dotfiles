@@ -159,6 +159,9 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   A forum topic's `message_thread_id` is the session address: direct text in a
   locally routed topic is accepted without Reply/mention, and unknown topics are
   silently ignored so several integrations can share a forum group.
+  `telegram-reply.log` rotates under a separate flock before exceeding
+  `NOTIFY_TG_REPLY_LOG_MAX_MB` (100 MB default), retaining
+  `NOTIFY_TG_REPLY_LOG_BACKUPS` files (3 default).
   Enabling it through the installer also sets `NOTIFY_DONE_TG=1`; otherwise a
   normal completed turn would never create a replyable topic under the quiet
   push-only default.

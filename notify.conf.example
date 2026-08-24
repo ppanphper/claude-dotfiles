@@ -166,5 +166,9 @@ NOTIFY_TG_TOPIC_CLEANUP=close
 # 或其他文件推断授权身份。优先支持 tmux，其次是 iTerm2。
 NOTIFY_TG_REPLY=0
 NOTIFY_TG_REPLY_ALLOW_FROM=""  # 例如 "123456789"
+# Gateway 日志 ~/.claude/telegram-reply.log 按大小自动轮转。单文件默认上限 100 MB，
+# 保留 3 份历史文件（.1/.2/.3）；BACKUPS=0 表示超限时直接清空当前日志、不保留历史。
+NOTIFY_TG_REPLY_LOG_MAX_MB=100
+NOTIFY_TG_REPLY_LOG_BACKUPS=3
 # 安装器启用本地回复时会同时写入 NOTIFY_DONE_TG=1，确保普通完成回合也会创建/更新
 # topic，用户可以直接继续回复。只用单向通知时仍保持顶部默认值 0（安静）。
