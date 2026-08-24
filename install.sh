@@ -195,15 +195,22 @@ setup_local_telegram_reply() {
   fi
 }
 
-# Optional guided Telegram setup. Only runs with a real terminal (skipped under
-# `curl | bash`, where stdin is the script). Opt out with SKIP_TELEGRAM_SETUP=1.
+# Guided Telegram setup. A piped installer still has the user's controlling
+# terminal available as /dev/tty, so curl | bash can remain interactive. Only a
+# genuinely headless/redirected environment skips the prompts.
 setup_telegram() {
   [ "${SKIP_TELEGRAM_SETUP:-0}" = "1" ] && return 0
-  if [ ! -t 0 ]; then
+  if [ -t 0 ]; then
+    _setup_telegram_interactive
+  elif ( : </dev/tty ) 2>/dev/null; then
+    _setup_telegram_interactive </dev/tty
+  else
     info "Telegram alerts (push + optional two-way replies) are available."
-    info "To set them up, run this installer in a terminal: bash \"$INSTALL_DIR/install.sh\""
-    return 0
+    info "No controlling terminal detected; run: bash \"$INSTALL_DIR/install.sh\""
   fi
+}
+
+_setup_telegram_interactive() {
   # Push may already be configured while the newer local reply gateway is not.
   if [ -f "$NOTIFY_CONF" ] && grep -q '^NOTIFY_TG_BOT_TOKEN="[0-9]' "$NOTIFY_CONF" 2>/dev/null; then
     ok "Telegram already configured in notify.conf (left untouched)"

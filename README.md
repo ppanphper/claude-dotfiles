@@ -306,13 +306,14 @@ The installer:
    to `settings.json.bak.<timestamp>` before any change is written, and the
    new file is written atomically via `mktemp` + `mv`. Re-running the
    installer is idempotent — no duplicate entries are added.
-6. **When run in a terminal** (not piped), offers a guided Telegram setup:
+6. **When run interactively**, offers a guided Telegram setup (including when
+   invoked as `curl ... | bash`; prompts are read from the controlling terminal):
    validates your bot token, auto-detects the chat id, writes the push config to
    `notify.conf`, and — if you opt into local topic replies — records your Telegram
    user id, enables the single local gateway, and wires a `SessionStart` hook. Run
-   `bash ~/claude-dotfiles/install.sh` from a terminal to reach this step; under
-   `curl | bash` it's skipped (stdin isn't a TTY) and the installer says so. Opt
-   out with `SKIP_TELEGRAM_SETUP=1`.
+   `bash ~/claude-dotfiles/install.sh` also works for upgrades. Only a truly
+   headless/redirected environment skips the prompts and prints the local command
+   to run later. Opt out with `SKIP_TELEGRAM_SETUP=1`.
 
 Restart Claude Code to see the status line. **The whole setup — status line,
 hooks, and Telegram push/two-way — is reproducible on a new machine by running
