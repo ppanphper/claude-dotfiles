@@ -254,9 +254,12 @@ Telegram by default.
 
 The gateway supports `tmux` first (`tmux send-keys -l`), then iTerm2 via
 AppleScript. Therefore the Claude session must still be running in tmux or iTerm2.
-Reply inside the corresponding topic; the text is injected as the next prompt and
-a small acknowledgement is sent back. If the session ended or its terminal
-disappeared, the gateway reports that instead of starting another Claude process.
+Send text directly inside the corresponding topic; no Telegram Reply action or
+`@bot` mention is required. The `message_thread_id` is the session address: only
+topics present in this machine's route cache are processed, while topics owned by
+other bots are silently ignored. Accepted text is injected as the next prompt and
+a small acknowledgement is sent back. If a known session's terminal disappeared,
+the gateway reports that instead of starting another Claude process.
 
 Telegram permits only one `getUpdates` consumer for a bot token. Do not run this
 gateway alongside Channels, OpenClaw, or another poller using the same bot; a

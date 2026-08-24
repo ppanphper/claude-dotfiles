@@ -378,13 +378,16 @@ def main() -> int:
                 sender = str((message.get("from") or {}).get("id", ""))
                 if str(chat.get("id", "")) != chat_id or not thread or not text:
                     continue
+                route = route_map.get(thread)
+                if not route:
+                    # A forum may host several bots. An unknown topic belongs to
+                    # another integration (or an expired local session), so it is
+                    # not an error and must not produce cross-bot noise.
+                    log(f"ignored unknown thread={thread} sender={sender}")
+                    continue
                 if not allowed_sender(sender, allowed):
                     log(f"ignored unauthorized sender={sender} thread={thread}")
                     send_text(token, chat_id, thread, "⛔ 此 Telegram 用户未被授权控制 Claude。")
-                    continue
-                route = route_map.get(thread)
-                if not route:
-                    send_text(token, chat_id, thread, "⚠️ 找不到对应的 Claude 会话，可能会话已结束。")
                     continue
                 backend = inject(route, text)
                 if backend:

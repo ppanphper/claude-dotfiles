@@ -156,6 +156,9 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   forum topic. Replies are injected with `tmux send-keys -l`, falling back to
   iTerm2 AppleScript. The gateway persists its update offset, requires
   `NOTIFY_TG_REPLY_ALLOW_FROM`, and fails closed when the allowlist is empty.
+  A forum topic's `message_thread_id` is the session address: direct text in a
+  locally routed topic is accepted without Reply/mention, and unknown topics are
+  silently ignored so several integrations can share a forum group.
   Enabling it through the installer also sets `NOTIFY_DONE_TG=1`; otherwise a
   normal completed turn would never create a replyable topic under the quiet
   push-only default.
