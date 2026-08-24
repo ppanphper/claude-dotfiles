@@ -176,10 +176,14 @@ setup_local_telegram_reply() {
     printf '\n%s\n' "$s"
     printf 'NOTIFY_TG_REPLY=1\n'
     printf 'NOTIFY_TG_REPLY_ALLOW_FROM="%s"\n' "$uid"
+    # A reply channel needs a topic after ordinary completed turns too. Keep the
+    # global default quiet for push-only users, but enable done pushes whenever
+    # the local bidirectional gateway is explicitly enabled.
+    printf 'NOTIFY_DONE_TG=1\n'
     printf '%s\n' "$e"
   } >> "$tmp"
   mv "$tmp" "$NOTIFY_CONF"
-  ok "local Telegram topic replies enabled for user $uid"
+  ok "local Telegram topic replies enabled for user $uid (done pushes enabled)"
 
   # Start it now; later SessionStart events merely ensure it remains available.
   # flock inside the gateway makes this safe and idempotent.

@@ -156,6 +156,9 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   forum topic. Replies are injected with `tmux send-keys -l`, falling back to
   iTerm2 AppleScript. The gateway persists its update offset, requires
   `NOTIFY_TG_REPLY_ALLOW_FROM`, and fails closed when the allowlist is empty.
+  Enabling it through the installer also sets `NOTIFY_DONE_TG=1`; otherwise a
+  normal completed turn would never create a replyable topic under the quiet
+  push-only default.
 
 When adding a channel or event, keep the always-`exit 0`,
 auto-skip-if-tool/config-missing discipline the other scripts follow.

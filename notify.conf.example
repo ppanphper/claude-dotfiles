@@ -166,5 +166,5 @@ NOTIFY_TG_TOPIC_CLEANUP=close
 # 或其他文件推断授权身份。优先支持 tmux，其次是 iTerm2。
 NOTIFY_TG_REPLY=0
 NOTIFY_TG_REPLY_ALLOW_FROM=""  # 例如 "123456789"
-# 若希望每轮 Stop 完成后也创建/更新 topic 并可回复，打开它（默认 done 很安静）。
-# NOTIFY_DONE_TG=1
+# 安装器启用本地回复时会同时写入 NOTIFY_DONE_TG=1，确保普通完成回合也会创建/更新
+# topic，用户可以直接继续回复。只用单向通知时仍保持顶部默认值 0（安静）。

@@ -246,10 +246,11 @@ NOTIFY_TG_REPLY=1
 NOTIFY_TG_REPLY_ALLOW_FROM="123456789"
 ```
 
-The existing default keeps completed-turn pushes quiet (`NOTIFY_DONE_TG=0`). If
-you want every completed reply to create/update its topic, set
-`NOTIFY_DONE_TG=1`; waiting/permission notifications already use Telegram by
-default.
+Push-only installs keep completed turns quiet (`NOTIFY_DONE_TG=0`). Enabling the
+local reply gateway changes it to `NOTIFY_DONE_TG=1`, because an ordinary
+completed turn must create/update its topic before the user can continue the
+conversation from Telegram. Waiting/permission notifications already use
+Telegram by default.
 
 The gateway supports `tmux` first (`tmux send-keys -l`), then iTerm2 via
 AppleScript. Therefore the Claude session must still be running in tmux or iTerm2.
