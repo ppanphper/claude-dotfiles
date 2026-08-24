@@ -4,18 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Custom Claude Code configuration distributed as a dotfiles repo. Three shell
-files do all the work; there is no build system, package manager, or test
+Custom Claude Code configuration distributed as a dotfiles repo. A few small
+shell/Python scripts do all the work; there is no build system, package manager, or test
 suite. End users install via `install.sh`, which symlinks the scripts into
 `~/.claude/` and merges entries into `~/.claude/settings.json`.
 
 - `statusline.sh` — the status-line renderer Claude Code invokes on every refresh.
 - `hooks/worktree-tracker.sh` — a `PostToolUse`/`Bash` hook that tracks `git worktree add`.
-- `hooks/notify.sh` — a `Stop` + `Notification` + `UserPromptSubmit` + `SessionEnd`
-  + `PreToolUse(AskUserQuestion)` + `PostToolUse(AskUserQuestion)` hook that alerts
-  you when Claude finishes or needs input, across six channels (iTerm2 tab color,
-  tab-title glyph, bell, desktop notification, sound, Telegram push).
+- `hooks/notify.sh` — a `SessionStart` + `Stop` + `Notification` +
+  `UserPromptSubmit` + `SessionEnd` + `PreToolUse(AskUserQuestion)` +
+  `PostToolUse(AskUserQuestion)` hook that alerts you when Claude finishes or
+  needs input, across six channels (iTerm2 tab color, tab-title glyph, bell,
+  desktop notification, sound, Telegram push), and can start the local Telegram
+  reply gateway.
   Configured by `~/.claude/notify.conf` (seeded from `notify.conf.example`).
+- `hooks/telegram-reply.py` — one global, Channels-free Telegram long-poll
+  gateway that routes forum-topic replies into the matching tmux/iTerm2 TUI.
 - `install.sh` — idempotent installer (clone → symlink → merge settings → check deps).
 
 ## How the pieces talk to each other
@@ -145,21 +149,13 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   merged `<blockquote>` into multiple cards because markdown fuses adjacent `>`
   blocks. Objective signals are false-hit-free; the keyword dictionary is the one
   fuzzy part — keep it small and high-confidence.
-- Two-way control (reply → new prompt) is intentionally **not** built here: a
-  hook can't inject input into a running session. That's Claude Code's official
-  `--channels` feature; don't add a `tmux send-keys` listener.
-- The telegram plugin is kept **globally disabled** (`enabledPlugins."telegram@…"
-  = false`), and `install.sh`'s `disable_telegram_plugin_globally` enforces that
-  after install. Reason: a globally-enabled channel plugin spawns its `getUpdates`
-  poller in *every* session, and Claude Code blocks ~2s at session end draining it
-  (the plugin's `server.ts` caps the drain at 2s). Push (notify.sh) is plain `curl`
-  and needs no plugin, so only two-way does — and the `claude-tg` shell function
-  (written by `add_claude_tg_alias`) re-enables it **per session** via `--settings
-  '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels
-  plugin:telegram@claude-plugins-official`. `--channels` alone will **not**
-  force-load a disabled plugin (verified), hence the `--settings` half. Keep both
-  flags together. `claude-tg` calls bare `claude` (not `command claude`) so a
-  user's proxy-wrapper `claude` function still applies.
+- Two-way control is implemented by `hooks/telegram-reply.py`, not official
+  Channels. `SessionStart` ensures one process owns the Telegram `getUpdates`
+  long-poll stream; a file lock prevents duplicate pollers. The notify hook stores
+  `thread → session → tty/tmux_pane` route metadata when it creates or refreshes a
+  forum topic. Replies are injected with `tmux send-keys -l`, falling back to
+  iTerm2 AppleScript. The gateway persists its update offset, requires
+  `NOTIFY_TG_REPLY_ALLOW_FROM`, and fails closed when the allowlist is empty.
 
 When adding a channel or event, keep the always-`exit 0`,
 auto-skip-if-tool/config-missing discipline the other scripts follow.

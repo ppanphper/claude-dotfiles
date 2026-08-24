@@ -4,6 +4,7 @@
 #   - Notification     → Claude needs input/permission (state "wait", amber tab)
 #   - UserPromptSubmit → you sent a prompt             (state "reset", clears tab)
 #   - SessionEnd       → the session ended             (state "end", topic cleanup)
+#   - SessionStart     → ensure the local Telegram reply gateway is running
 #   - PostToolUse(AskUserQuestion) → you answered an in-TUI question
 #                                    (state "reset", clears the amber tab)
 #
@@ -51,6 +52,7 @@ case "$event" in
   Stop)             state="done" ;;
   Notification)     state="wait" ;;
   UserPromptSubmit) state="reset" ;;
+  SessionStart)     state="start" ;;
   SessionEnd)       state="end" ;;
   # AskUserQuestion fires PreToolUse (before the question renders), then a
   # Notification (the "wait"). The question + options live in the tool INPUT, not
@@ -161,9 +163,18 @@ tg_topic_title() {
   printf '%s' "$t"
 }
 
-# Per-session forum-topic cache is one JSON line: {"thread":"75","title":"…"}.
-# Reading by field (jq) beats line positions — a title can hold anything.
-tg_cache_write() { jq -nc --arg thread "$1" --arg title "$2" '{thread:$thread,title:$title}' > "$3"; }
+# Per-session forum-topic cache doubles as the inbound reply route. The Telegram
+# gateway looks up message_thread_id here and injects the reply into the original
+# tmux/iTerm2 session. Reading by field (jq) beats line positions — a title can
+# contain anything. Existing two-field caches remain readable but cannot route
+# inbound text until the next notification refreshes them.
+tg_cache_write() {
+  local cache_tmp="${3}.tmp.$$"
+  jq -nc --arg thread "$1" --arg title "$2" --arg session "$session_id" \
+    --arg cwd "$cwd" --arg tty "$TTYDEV" --arg tmux_pane "${TMUX_PANE:-}" \
+    '{thread:$thread,title:$title,session:$session,cwd:$cwd,tty:$tty,tmux_pane:$tmux_pane}' > "$cache_tmp" \
+    && mv "$cache_tmp" "$3"
+}
 
 # Append a diagnostics line to ~/.claude/notify-debug.log when NOTIFY_DEBUG=1.
 # Used by the image branch (which otherwise swallows every failure with 2>/dev/null)
@@ -258,6 +269,13 @@ NOTIFY_TG_HOST_LABEL=""
 #   off    = do nothing
 NOTIFY_TG_TOPIC_CLEANUP=close
 
+# Local, Channels-free Telegram → Claude reply gateway. SessionStart ensures one
+# global long-poll process is running; a file lock prevents duplicate pollers.
+# ALLOW_FROM is required and accepts one or more numeric Telegram user ids,
+# separated by commas/spaces. Empty = fail closed (the gateway does not start).
+NOTIFY_TG_REPLY=0
+NOTIFY_TG_REPLY_ALLOW_FROM=""
+
 NOTIFY_DEBUG=0
 
 CONF="${CLAUDE_NOTIFY_CONF:-$HOME/.claude/notify.conf}"
@@ -266,12 +284,32 @@ CONF="${CLAUDE_NOTIFY_CONF:-$HOME/.claude/notify.conf}"
 
 [ "$NOTIFY_ENABLED" = "1" ] || exit 0
 
+start_tg_reply_gateway() {
+  [ "$NOTIFY_TG_REPLY" = "1" ] && [ -n "$NOTIFY_TG_REPLY_ALLOW_FROM" ] \
+    && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && command -v python3 >/dev/null 2>&1 \
+    || return 0
+  local reply_script
+  reply_script=$(python3 -c "import os,sys;print(os.path.join(os.path.dirname(os.path.realpath(sys.argv[1])),'telegram-reply.py'))" "$0" 2>/dev/null)
+  [ -f "$reply_script" ] && nohup python3 "$reply_script" >/dev/null 2>&1 &
+  return 0
+}
+
+# --- start: ensure one global Telegram reply gateway is alive ----------------
+if [ "$state" = "start" ]; then
+  start_tg_reply_gateway
+  exit 0
+fi
+
 # --- reset: prompt submitted / question answered → clear tab, start progress ---
 # This is the "you're now driving the session again" event (a typed prompt, or an
 # AskUserQuestion answered in the TUI), so it clears the amber/green left from the
 # previous turn AND starts the animated processing indicator that runs until the
 # next Stop/Notification.
 if [ "$state" = "reset" ]; then
+  # Also repair the gateway on every submitted prompt. This covers an existing
+  # Claude session that predates the SessionStart hook or a gateway restarted by
+  # the OS, without requiring the user to launch it manually again.
+  start_tg_reply_gateway
   [ "$NOTIFY_TABCOLOR_RESET" = "1" ] && [ "$IS_ITERM" = "1" ] && \
     tw "${ESC}]6;1;bg;*;default${BEL}"
   # The pending AskUserQuestion (if any) was just answered / superseded by a typed
@@ -476,6 +514,10 @@ fi
 # --- channel 6: Telegram push (remote; ignores focus-mute; backgrounded) -----
 if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_ID" ] \
    && command -v curl >/dev/null 2>&1; then
+  # SessionStart is the normal launcher. This second idempotent attempt repairs
+  # upgrades where the current session started before that hook was installed,
+  # and restarts a gateway that exited after a transient first-start failure.
+  start_tg_reply_gateway
   # Build an HTML message: bold header line + lightly-converted summary (newlines
   # kept). parse_mode=HTML renders **bold**/`code`/headings instead of showing
   # the raw markdown the assistant emits.
@@ -511,10 +553,13 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
       fi
       if [ -f "$tf" ]; then
         thread=$(jq -r '.thread // empty' "$tf" 2>/dev/null)
+        had_title=$(jq -r '.title // empty' "$tf" 2>/dev/null)
+        # Refresh route metadata on every notification. This upgrades old cache
+        # files and follows a resumed session if it moved to another terminal.
+        [ -n "$thread" ] && tg_cache_write "$thread" "$had_title" "$tf"
         # Rename if the session's title has changed since the topic was created
         # (ai-title typically appears a few turns in, after first creation).
         if [ "$NOTIFY_TG_TOPIC_TITLE" = "1" ] && [ -n "$thread" ] && [ -n "$topic_name" ]; then
-          had_title=$(jq -r '.title // empty' "$tf" 2>/dev/null)
           if [ "$topic_name" != "$had_title" ]; then
             curl -fsS -m 10 "${api}/editForumTopic" \
               --data-urlencode "chat_id=${NOTIFY_TG_CHAT_ID}" \

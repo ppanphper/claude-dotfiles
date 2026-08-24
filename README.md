@@ -214,33 +214,64 @@ richly-formatted reply in full on your phone.
 
 ### Two-way control (reply in Telegram to drive the session)
 
-This hook is **outbound only** — it can't turn a Telegram reply into the next
-prompt, because a hook can't inject input into a running Claude Code session.
-That's exactly what Claude Code's official **Channels** feature does, and it's
-genuinely bidirectional. The installer's guided Telegram setup wires it up for
-you (installs the `telegram@claude-plugins-official` plugin, writes its token and
-an `access.json` allowlist so you skip pairing, and adds a `claude-tg` shell
-function). Then start a two-way session with:
+The optional local gateway sends a Telegram topic reply into the original Claude
+TUI. It does **not** install or enable Claude Code Channels. `SessionStart`
+ensures one gateway process is running; when a notification creates a forum topic,
+the hook stores this route:
 
-```bash
-claude-tg   # claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' \
-            #        --channels plugin:telegram@claude-plugins-official
+```json
+{
+  "thread": "123",
+  "session": "session-uuid",
+  "cwd": "/path/to/project",
+  "tty": "/dev/ttys012",
+  "tmux_pane": "%3"
+}
 ```
 
-**Why the plugin is kept globally *disabled*.** A globally-enabled channel plugin
-spawns its `getUpdates` poller in *every* session, and Claude Code then blocks
-~2s at session end while that poller drains. Push notifications go through
-`notify.sh` (plain `curl`) and don't need the plugin at all — only two-way does.
-So the installer leaves `enabledPlugins."telegram@…"` set to `false`, and
-`claude-tg` re-enables it **for that one session** via `--settings`. Net: ordinary
-`claude` sessions exit instantly; only `claude-tg` pays for (and uses) the poller.
+The gateway uses Telegram Bot API `getUpdates` long polling. This is not a busy
+loop: Telegram holds one HTTP request for up to 50 seconds and returns immediately
+when a message arrives. A file lock guarantees one active poller per bot token;
+the update offset is persisted so restarts do not replay messages. Network errors
+are retried with backoff.
 
-The channel is **per session** — only sessions launched with `claude-tg` bridge to
-Telegram, and a reply drives *that* session. DM the bot or reply to its messages
-in the group to send the next prompt. (Requires Claude Code v2.1.80+, a claude.ai
-Pro/Max plan or Console API key, and the `bun` runtime — the installer offers to
-install `bun` if it's missing.) Avoid building a `tmux send-keys` listener for
-this — it's fragile and Channels is the supported path.
+To enable it, run the installer in a real terminal and choose local topic replies.
+The installer uses `NOTIFY_TG_REPLY_ALLOW_FROM` as the single authorization
+source. An existing value is retained; if it is missing, the installer guides the
+user to enter it once. It does not infer authorization from a chat id,
+`getUpdates`, or another application's files. The resulting configuration is:
+
+```bash
+NOTIFY_TG_REPLY=1
+NOTIFY_TG_REPLY_ALLOW_FROM="123456789"
+```
+
+The existing default keeps completed-turn pushes quiet (`NOTIFY_DONE_TG=0`). If
+you want every completed reply to create/update its topic, set
+`NOTIFY_DONE_TG=1`; waiting/permission notifications already use Telegram by
+default.
+
+The gateway supports `tmux` first (`tmux send-keys -l`), then iTerm2 via
+AppleScript. Therefore the Claude session must still be running in tmux or iTerm2.
+Reply inside the corresponding topic; the text is injected as the next prompt and
+a small acknowledgement is sent back. If the session ended or its terminal
+disappeared, the gateway reports that instead of starting another Claude process.
+
+Telegram permits only one `getUpdates` consumer for a bot token. Do not run this
+gateway alongside Channels, OpenClaw, or another poller using the same bot; a
+conflict is logged as HTTP 409. For several machines, use one bot per machine or
+put a central webhook/router in front of them.
+
+For a manual start or diagnostics:
+
+```bash
+python3 hooks/telegram-reply.py --check
+python3 hooks/telegram-reply.py
+tail -f ~/.claude/telegram-reply.log
+```
+
+`--check` calls only `getMe` and `getWebhookInfo`; it never calls `getUpdates`,
+so it cannot consume or disturb pending replies.
 
 ## Install
 
@@ -260,12 +291,14 @@ The installer:
 3. Symlinks `~/.claude/statusline.sh` → the repo's `statusline.sh`. Any
    pre-existing file at that path is backed up to
    `~/.claude/statusline.sh.bak.<timestamp>`.
-4. Symlinks `~/.claude/hooks/worktree-tracker.sh` and
-   `~/.claude/hooks/notify.sh` → the repo's hooks (same backup behavior), and
+4. Symlinks `~/.claude/hooks/worktree-tracker.sh`,
+   `~/.claude/hooks/notify.sh`, and `~/.claude/hooks/telegram-reply.py` → the
+   repo's hooks (same backup behavior), and
    seeds `~/.claude/notify.conf` from `notify.conf.example` if you don't already
    have one (your existing config is never overwritten).
 5. Merges `statusLine`, a `PostToolUse` → `Bash` → `worktree-tracker.sh` entry,
-   and `Stop` + `Notification` + `UserPromptSubmit` + `SessionEnd` → `notify.sh`
+   and `SessionStart` + `Stop` + `Notification` + `UserPromptSubmit` +
+   `SessionEnd` → `notify.sh`
    entries into
    `~/.claude/settings.json`, preserving every other field and any other hooks
    you've configured. The original file is backed up
@@ -274,10 +307,8 @@ The installer:
    installer is idempotent — no duplicate entries are added.
 6. **When run in a terminal** (not piped), offers a guided Telegram setup:
    validates your bot token, auto-detects the chat id, writes the push config to
-   `notify.conf`, and — if you opt into two-way replies — installs the official
-   Telegram plugin, installs `bun` if needed, writes its token + an `access.json`
-   allowlist (so you skip pairing), leaves the plugin globally disabled, and adds
-   a `claude-tg` function that enables it per-session. Run
+   `notify.conf`, and — if you opt into local topic replies — records your Telegram
+   user id, enables the single local gateway, and wires a `SessionStart` hook. Run
    `bash ~/claude-dotfiles/install.sh` from a terminal to reach this step; under
    `curl | bash` it's skipped (stdin isn't a TTY) and the installer says so. Opt
    out with `SKIP_TELEGRAM_SETUP=1`.

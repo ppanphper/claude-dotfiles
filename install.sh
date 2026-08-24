@@ -104,93 +104,6 @@ install_jq() {
   ok "jq installed: $(jq --version)"
 }
 
-# Install bun if missing (the Telegram plugin's MCP server runs on it). Returns
-# non-zero if it still isn't available afterward.
-try_install_bun() {
-  command -v bun >/dev/null 2>&1 && return 0
-  command -v curl >/dev/null 2>&1 || { warn "no curl to fetch bun — install it manually: https://bun.sh"; return 1; }
-  info "installing bun (the Telegram plugin's MCP server needs it)…"
-  if curl -fsSL https://bun.sh/install | bash; then
-    export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-    export PATH="$BUN_INSTALL/bin:$PATH"
-    command -v bun >/dev/null 2>&1 && { ok "bun installed: $(bun --version 2>/dev/null) — restart your shell to keep it on PATH"; return 0; }
-  fi
-  warn "bun install didn't complete — install it manually (https://bun.sh) and re-run."
-  return 1
-}
-
-# Keep the telegram plugin installed (cached) but globally DISABLED in
-# settings.json. A globally-enabled plugin spawns its bun getUpdates poller in
-# EVERY claude session, and Claude Code then blocks ~2s at session end while that
-# poller drains (telegram server.ts caps it at 2s). Push notifications go through
-# notify.sh (plain curl) and don't need the plugin, so the only thing that needs it
-# is two-way — which claude-tg re-enables per-session via --settings. Net: normal
-# sessions exit instantly; two-way still works on demand. Idempotent + atomic.
-disable_telegram_plugin_globally() {
-  local key="telegram@claude-plugins-official"
-  command -v jq >/dev/null 2>&1 || {
-    warn "jq missing — can't disable telegram plugin; set enabledPlugins[\"$key\"]=false yourself to avoid a ~2s session-end delay."
-    return 0
-  }
-  [ -f "$SETTINGS" ] && jq empty "$SETTINGS" 2>/dev/null || {
-    warn "$SETTINGS missing/invalid — skipping telegram global-disable."
-    return 0
-  }
-  if [ "$(jq -r --arg k "$key" '.enabledPlugins[$k] // empty' "$SETTINGS")" = "false" ]; then
-    ok "telegram plugin already globally disabled (on-demand via claude-tg)"
-    return 0
-  fi
-  local tmp; tmp=$(mktemp)
-  if jq --arg k "$key" '.enabledPlugins[$k] = false' "$SETTINGS" > "$tmp" && [ -s "$tmp" ]; then
-    cp "$SETTINGS" "${SETTINGS}.bak.$(date +%s)"
-    mv "$tmp" "$SETTINGS"
-    ok "telegram plugin globally disabled — claude-tg enables it per-session (skips ~2s exit delay)"
-  else
-    rm -f "$tmp"
-    warn "couldn't update $SETTINGS — disable the telegram plugin manually."
-  fi
-}
-
-# Add a `claude-tg` shell FUNCTION to the user's rc: open an interactive session
-# with the Telegram two-way channel. Called only after the user opts into two-way,
-# so we write it automatically (idempotently). The telegram plugin is kept
-# globally DISABLED (see disable_telegram_plugin_globally) so normal sessions don't
-# pay its ~2s getUpdates-drain at exit; the function re-enables it for THIS session
-# only via --settings and wires two-way via --channels. It invokes plain `claude`
-# (not `command claude`) so a user's proxy-wrapper `claude` function still applies.
-add_claude_tg_alias() {
-  local rc=""
-  case "${SHELL##*/}" in
-    zsh)  rc="$HOME/.zshrc" ;;
-    bash) rc="$HOME/.bashrc" ;;
-    *)    rc="${ENV:-$HOME/.profile}" ;;
-  esac
-  [ -f "$rc" ] || : > "$rc"
-  if grep -q 'claude-tg()' "$rc" 2>/dev/null; then
-    ok "claude-tg function already in $rc"
-    return 0
-  fi
-  grep -q 'alias claude-tg=' "$rc" 2>/dev/null && \
-    warn "an old 'alias claude-tg' is in $rc — delete it; the function below replaces it."
-  if cat >> "$rc" <<'TGFUNC'
-
-# claude-tg: open an interactive Telegram two-way session. The telegram plugin is
-# kept globally disabled (so normal sessions skip its ~2s getUpdates drain at exit);
-# --settings enables it for THIS session only and --channels wires up two-way.
-# Invokes plain `claude` so a user's proxy-wrapper `claude` function still applies.
-unalias claude-tg 2>/dev/null  # drop a stale same-name alias so re-sourcing won't clash
-claude-tg() {
-  claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' \
-         --channels plugin:telegram@claude-plugins-official "$@"
-}
-TGFUNC
-  then
-    ok "claude-tg function added to $rc (run: source $rc)"
-  else
-    warn "couldn't write to $rc — add a claude-tg function yourself (see README)."
-  fi
-}
-
 # Write the managed Telegram block to notify.conf. notify.conf is sourced and we
 # append at the end, so these assignments win over the defaults above them. The
 # block is delimited by sentinels and rewritten in place, so re-running the
@@ -226,71 +139,56 @@ write_tg_conf() {
   mv "$tmp" "$NOTIFY_CONF"
 }
 
-# Install + configure the official Telegram plugin (the *reply* half). The push
-# hook only sends and the plugin only receives, so reusing one bot is fine. We
-# also pre-write access.json (allowlist) so the user skips the pairing dance.
-# $1 = bot token, $2 = the push chat id (group → enabled for group replies).
-setup_telegram_channels() {
-  local token="$1" chat="$2"
-  command -v claude >/dev/null 2>&1 || { warn "claude CLI not on PATH — install Claude Code, then see README 'Two-way control'."; return 0; }
-  if ! command -v bun >/dev/null 2>&1; then
-    printf '      The two-way plugin needs bun. Install it now? [Y/n] '
-    local b; read -r b || true
-    case "$b" in [nN]*) warn "skipping two-way — install bun (https://bun.sh) and re-run."; return 0 ;; esac
-    try_install_bun || return 0
+# Enable the lightweight local Telegram reply gateway. Unlike official Channels,
+# this routes a topic reply into the original tmux/iTerm2 TUI. A numeric Telegram
+# user-id allowlist is mandatory; the gateway fails closed without one. Existing
+# values are reused; only this explicit setting is trusted as authorization.
+setup_local_telegram_reply() {
+  # $1 = forum enabled (1/0)
+  if [ "$1" != "1" ]; then
+    warn "topic replies need a Telegram forum supergroup (NOTIFY_TG_FORUM=1)."
+    warn "Enable Topics, make the bot an admin, then re-run the installer."
+    return 0
   fi
-  info "Installing official Telegram plugin…"
-  claude plugin marketplace update claude-plugins-official >/dev/null 2>&1 || true
-  if claude plugin install telegram@claude-plugins-official >/dev/null 2>&1; then
-    ok "plugin installed: telegram@claude-plugins-official"
+  local uid=""
+  [ -f "$NOTIFY_CONF" ] && uid=$( (set +u; . "$NOTIFY_CONF" >/dev/null 2>&1
+    printf '%s' "${NOTIFY_TG_REPLY_ALLOW_FROM:-}") )
+  if [ -n "$uid" ] && printf '%s\n' "$uid" | grep -Eq '^[0-9]+([,[:space:]]+[0-9]+)*$'; then
+    info "Telegram reply allowlist already configured: $uid"
   else
-    warn "plugin install failed — run manually: claude plugin install telegram@claude-plugins-official"
+    [ -n "$uid" ] && warn "NOTIFY_TG_REPLY_ALLOW_FROM is invalid and must be configured again."
+    printf '      Your Telegram numeric user id (from @userinfobot; blank to skip): '
+    read -r uid || return 0
   fi
-  local envdir="$CLAUDE_DIR/channels/telegram"
-  mkdir -p "$envdir"
-  ( umask 077; printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" > "$envdir/.env" )
-  chmod 600 "$envdir/.env" 2>/dev/null || true
-  ok "token written: $envdir/.env"
+  [ -n "$uid" ] || { info "Skipped local Telegram replies."; return 0; }
+  if ! printf '%s\n' "$uid" | grep -Eq '^[0-9]+([,[:space:]]+[0-9]+)*$'; then
+    warn "user id/allowlist must contain only numeric ids — local replies left disabled."
+    return 0
+  fi
 
-  # --- access control: write access.json so pairing isn't needed -------------
-  printf '\n   Who may drive Claude through this bot? (allowlist — skips pairing)\n'
-  printf '      Your Telegram numeric user id (from @userinfobot; blank to skip): '
-  local uid; read -r uid || true
-  case "$uid" in *[!0-9]*) [ -n "$uid" ] && warn "not a numeric id — ignoring it."; uid="" ;; esac
+  local s="# >>> claude-dotfiles local telegram reply (managed) >>>"
+  local e="# <<< claude-dotfiles local telegram reply (managed) <<<"
+  local tmp; tmp=$(mktemp)
+  awk -v s="$s" -v e="$e" '
+    $0==s {skip=1; next} skip && $0==e {skip=0; next} !skip {print}
+  ' "$NOTIFY_CONF" > "$tmp"
+  {
+    printf '\n%s\n' "$s"
+    printf 'NOTIFY_TG_REPLY=1\n'
+    printf 'NOTIFY_TG_REPLY_ALLOW_FROM="%s"\n' "$uid"
+    printf '%s\n' "$e"
+  } >> "$tmp"
+  mv "$tmp" "$NOTIFY_CONF"
+  ok "local Telegram topic replies enabled for user $uid"
 
-  # A negative push chat id is a group/supergroup — offer to enable group replies.
-  local grp=""
-  case "$chat" in -[0-9]*) grp="$chat" ;; esac
-
-  if [ -z "$uid" ] && [ -z "$grp" ]; then
-    info "No id given — leaving the default 'pairing' policy."
-    info "Approve later in Claude with: /telegram:access pair <code>"
+  # Start it now; later SessionStart events merely ensure it remains available.
+  # flock inside the gateway makes this safe and idempotent.
+  if command -v python3 >/dev/null 2>&1 && [ -f "$REPLY_LINK" ]; then
+    nohup python3 "$REPLY_LINK" >/dev/null 2>&1 &
+    ok "Telegram reply gateway started (single long-poll process)"
   else
-    local af="[]"; [ -n "$uid" ] && af="[\"$uid\"]"
-    local groups="{}"
-    [ -n "$grp" ] && groups="{\"$grp\":{\"requireMention\":true,\"allowFrom\":$af}}"
-    if command -v jq >/dev/null 2>&1; then
-      ( umask 077; jq -n --argjson af "$af" --argjson g "$groups" \
-          '{dmPolicy:"allowlist", allowFrom:$af, groups:$g}' > "$envdir/access.json" )
-    else
-      ( umask 077; printf '{"dmPolicy":"allowlist","allowFrom":%s,"groups":%s}\n' "$af" "$groups" > "$envdir/access.json" )
-    fi
-    chmod 600 "$envdir/access.json" 2>/dev/null || true
-    ok "access.json written (allowlist — no pairing needed)"
-    if [ -n "$grp" ]; then
-      info "Group $grp enabled — reply to the bot's messages there to drive Claude."
-      warn "For group replies/topics, make the bot a group ADMIN with 'Manage Topics'."
-    fi
+    warn "python3/reply gateway missing — it will start after dependencies are installed."
   fi
-
-  disable_telegram_plugin_globally
-  add_claude_tg_alias
-
-  printf '\n   %b\n' "${CYAN}Finish two-way (interactive — run these yourself):${RESET}"
-  printf '     1. Start a two-way session with:  %s\n' "claude-tg"
-  printf '        (full form: claude --settings '\''{"enabledPlugins":{"telegram@claude-plugins-official":true}}'\'' --channels plugin:telegram@claude-plugins-official)\n'
-  printf '     2. DM the bot (or reply to it in the group) — it reaches Claude.\n'
-  [ -z "$uid" ] && printf '     3. If you skipped the id: /telegram:access pair <code> to approve yourself.\n'
 }
 
 # Optional guided Telegram setup. Only runs with a real terminal (skipped under
@@ -302,9 +200,26 @@ setup_telegram() {
     info "To set them up, run this installer in a terminal: bash \"$INSTALL_DIR/install.sh\""
     return 0
   fi
-  # Already configured? (real token in notify.conf) → don't re-prompt.
+  # Push may already be configured while the newer local reply gateway is not.
   if [ -f "$NOTIFY_CONF" ] && grep -q '^NOTIFY_TG_BOT_TOKEN="[0-9]' "$NOTIFY_CONF" 2>/dev/null; then
     ok "Telegram already configured in notify.conf (left untouched)"
+    local old_enabled old_forum
+    old_enabled=$( (set +u; . "$NOTIFY_CONF" >/dev/null 2>&1; printf '%s' "${NOTIFY_TG_REPLY:-0}") )
+    old_forum=$( (set +u; . "$NOTIFY_CONF" >/dev/null 2>&1; printf '%s' "${NOTIFY_TG_FORUM:-0}") )
+    if [ "$old_enabled" = "1" ]; then
+      # Idempotently validate/reuse the one authorization setting; prompt only
+      # when it is absent or malformed.
+      setup_local_telegram_reply "${old_forum:-0}"
+    else
+      printf '   Enable lightweight topic replies to the original Claude TUI? [y/N] '
+      local old_reply; read -r old_reply || return 0
+      case "$old_reply" in
+        [yY]*)
+          setup_local_telegram_reply "${old_forum:-0}"
+          ;;
+        *) info "Push notifications left unchanged." ;;
+      esac
+    fi
     return 0
   fi
 
@@ -409,11 +324,11 @@ setup_telegram() {
     fi
   fi
 
-  printf '\n   Also REPLY in Telegram to drive Claude (official Channels plugin)? [y/N] '
+  printf '\n   Also REPLY in each Telegram topic to drive its original Claude TUI? [y/N] '
   local reply2; read -r reply2 || return 0
   case "$reply2" in
-    [yY]*) setup_telegram_channels "$token" "$chat" ;;
-    *) info "Push-only for now. Add two-way later — see README 'Two-way control'." ;;
+    [yY]*) setup_local_telegram_reply "$forum" ;;
+    *) info "Push-only for now. Re-run the installer to add local topic replies." ;;
   esac
 }
 
@@ -620,6 +535,20 @@ if [ -f "$RENDER_TARGET" ]; then
   fi
 fi
 
+# --- symlink hooks/telegram-reply.py (optional inbound Telegram gateway) ------
+REPLY_TARGET="$INSTALL_DIR/hooks/telegram-reply.py"
+REPLY_LINK="$HOOKS_DIR/telegram-reply.py"
+if [ -f "$REPLY_TARGET" ]; then
+  chmod +x "$REPLY_TARGET"
+  if [ -L "$REPLY_LINK" ] && [ "$(readlink "$REPLY_LINK")" = "$REPLY_TARGET" ]; then
+    :
+  else
+    [ -e "$REPLY_LINK" ] || [ -L "$REPLY_LINK" ] && mv "$REPLY_LINK" "${REPLY_LINK}.bak.$(date +%s)"
+    ln -s "$REPLY_TARGET" "$REPLY_LINK"
+    ok "Telegram reply gateway symlinked: $REPLY_LINK"
+  fi
+fi
+
 # --- seed / migrate ~/.claude/notify.conf from the example --------------------
 # Fresh install: copy the template. Upgrade: 3-way-merge the latest template onto
 # the user's conf (new keys/comments appear; their edits are carried over) — see
@@ -685,6 +614,7 @@ merge_settings() {
     | ensure_event("Stop")
     | ensure_event("Notification")
     | ensure_event("UserPromptSubmit")
+    | ensure_event("SessionStart")
     | ensure_event("SessionEnd")
   '
 }
@@ -722,7 +652,7 @@ setup_telegram
 # --- prune old backups so they don't accumulate across upgrades ---------------
 # Runs last so this upgrade's fresh backups are the ones kept. Covers every file
 # the installer may back up. Tune with BACKUP_KEEP (default 3; 0 keeps none).
-for _b in "$LINK" "$HOOK_LINK" "$NOTIFY_LINK" "$RENDER_LINK" "$SETTINGS" "$NOTIFY_CONF"; do
+for _b in "$LINK" "$HOOK_LINK" "$NOTIFY_LINK" "$RENDER_LINK" "$REPLY_LINK" "$SETTINGS" "$NOTIFY_CONF"; do
   [ -n "$_b" ] && prune_backups "$_b"
 done
 

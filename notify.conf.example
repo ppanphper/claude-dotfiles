@@ -159,8 +159,12 @@ NOTIFY_TG_HOST_LABEL=""
 # 拥有「管理话题」权限的群管理员。
 NOTIFY_TG_TOPIC_CLEANUP=close
 
-# 想在 Telegram 里也能回复来驱动会话（下达新任务）？钩子无法把提示词注入到正在
-# 运行的会话里 —— 那是 Claude Code 官方的双向「Channels」特性，不是这个钩子做的。
-# 安装脚本会为此添加一个 `claude-tg` 函数（插件保持全局禁用，好让普通会话跳过它
-# 在退出时约 2 秒的 getUpdates 拉取；claude-tg 会按会话临时启用它）。详见 README
-# 的「Two-way control」一节。
+# 在 Telegram 论坛话题中回复，将文本注入原 Claude TUI。这不使用官方
+# 不使用官方 Channels：SessionStart 会确保一个全局 gateway 运行，它用 Telegram 服务器挂起的
+# getUpdates 长轮询接收消息，空闲时不会高频空转。必须填允许控制 Claude 的 Telegram
+# 数字 user id，多个用逗号或空格分隔。安装器只在此项缺失时引导填写，不会从 chat id
+# 或其他文件推断授权身份。优先支持 tmux，其次是 iTerm2。
+NOTIFY_TG_REPLY=0
+NOTIFY_TG_REPLY_ALLOW_FROM=""  # 例如 "123456789"
+# 若希望每轮 Stop 完成后也创建/更新 topic 并可回复，打开它（默认 done 很安静）。
+# NOTIFY_DONE_TG=1
