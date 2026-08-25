@@ -539,6 +539,34 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
   tg_caption="<b>${glyph} ${tg_hdr}</b>"
   dn=$([ "$state" = "done" ] && echo true || echo false)
   (
+    # Keep every image-rendering artifact inside one recognisable directory and
+    # clean it both on the normal path and when this background worker exits or
+    # receives a catchable termination signal. The prefix check prevents an
+    # unset/corrupted variable from ever widening the removal target.
+    td=""
+    tg_tmp_root="${TMPDIR:-/tmp}"
+    tg_tmp_root="${tg_tmp_root%/}"
+    case "$tg_tmp_root" in
+      ""|"/") tg_tmp_root="/tmp" ;;
+      /*) ;;
+      *) tg_tmp_root="/tmp" ;;
+    esac
+    cleanup_tg_image_tmp() {
+      local dir="${td:-}"
+      [ -n "$dir" ] || return 0
+      case "$dir" in
+        "$tg_tmp_root"/claude-notify.*) ;;
+        *) return 0 ;;
+      esac
+      if rm -rf -- "$dir" 2>/dev/null; then
+        td=""
+      fi
+    }
+    trap cleanup_tg_image_tmp EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     api="https://api.telegram.org/bot${NOTIFY_TG_BOT_TOKEN}"
     thread=""
     if [ "$NOTIFY_TG_FORUM" = "1" ] && [ -n "$session_id" ]; then
@@ -615,7 +643,7 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
       dbg "img: mode on py=$(command -v python3) summary_len=${#summary_raw} min=$NOTIFY_TG_IMAGE_MIN_CHARS"
       render=$(python3 -c "import os,sys;print(os.path.join(os.path.dirname(os.path.realpath(sys.argv[1])),'render-reply.py'))" "$0" 2>/dev/null)
       if [ -n "$render" ] && [ -f "$render" ]; then
-        td=$(mktemp -d 2>/dev/null) || td=""
+        td=$(mktemp -d "$tg_tmp_root/claude-notify.XXXXXX" 2>/dev/null) || td=""
         if [ -n "$td" ]; then
           res=$(printf '%s' "$summary_raw" | python3 "$render" --out "$td/reply.png" --header "$title_text · $label" ${accent:+--accent "$accent"} ${img_meta:+--meta "$img_meta"} --theme "$NOTIFY_TG_IMAGE_THEME" --semantic "$NOTIFY_TG_IMAGE_SEMANTIC" 2>"$td/render.err")
           rc=$?
@@ -651,7 +679,7 @@ if [ "$do_tg" = "1" ] && [ -n "$NOTIFY_TG_BOT_TOKEN" ] && [ -n "$NOTIFY_TG_CHAT_
               dbg "img: rendered file missing ($img)"
             fi
           fi
-          rm -rf "$td"
+          cleanup_tg_image_tmp
         fi
       else
         dbg "img: render-reply.py not found (render=$render)"

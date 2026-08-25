@@ -210,7 +210,10 @@ Chrome/Chromium (the `markdown`/`pygments`/`Pillow` Python packages improve it
 but each degrades gracefully); if Chrome is absent the hook silently falls back
 to the text message. Replies too tall for Telegram's photo limits are sent as a
 file/PDF via `sendDocument` so nothing is cut off. This is the way to see a long,
-richly-formatted reply in full on your phone.
+richly-formatted reply in full on your phone. Local PNG/PDF/HTML artifacts and
+upload diagnostics live in one per-send `claude-notify.*` temporary directory.
+The background sender removes it after each attempt and traps `EXIT`, `HUP`,
+`INT`, and `TERM` so catchable early exits clean it as well.
 
 ### Two-way control (reply in Telegram to drive the session)
 

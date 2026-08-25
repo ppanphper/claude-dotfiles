@@ -433,7 +433,13 @@ def main():
     if str(args.semantic) not in ("0", "", "false", "no"):
         body = semantic_html(body)
     page = build_html(body, args.width, args.header, args.accent, args.meta, args.theme)
-    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as f:
+    # Keep the intermediate HTML beside the requested PNG/PDF. notify.sh places
+    # that output in its per-send temp directory, so its EXIT/signal trap can
+    # remove the HTML too if this renderer is terminated before finally runs.
+    out_dir = os.path.dirname(os.path.abspath(args.out))
+    with tempfile.NamedTemporaryFile(
+            "w", prefix="reply-", suffix=".html", dir=out_dir,
+            delete=False, encoding="utf-8") as f:
         f.write(page); html_path = f.name
 
     try:

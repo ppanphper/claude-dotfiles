@@ -140,6 +140,10 @@ Channels are toggled *per state* via `notify.conf`. Notable details:
   (`decorate_code_blocks`, which no-ops on a count mismatch). `body{min-height:
   100vh}` makes Chrome's over-tall screenshot fill with the real bg colour so
   `autocrop` can trim it — without it a light theme shows a black tail.
+  The PNG/PDF, intermediate HTML, and render/upload diagnostics all live in one
+  prefixed per-send temp directory. The background sender removes it on the
+  normal path and via `EXIT`/`HUP`/`INT`/`TERM` traps; keep the prefix guard when
+  changing this cleanup so an empty or corrupted path can never widen its scope.
   `--semantic` (`NOTIFY_TG_IMAGE_SEMANTIC`) colours by importance: status symbols
   (✓✗⚠), the value inside an inline `code` (`true`/`rc=0`→green, `false`/`error`→
   red), a small CN/EN keyword dictionary (with a `不/没/无/未` negative-lookbehind
